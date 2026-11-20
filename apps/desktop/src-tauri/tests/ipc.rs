@@ -1,6 +1,12 @@
 //! Drives the registered commands through Tauri's mock runtime, so argument
 //! parsing, camelCase JSON and the `{code, message}` rejection are exercised
 //! the way the webview would see them (no window is opened).
+//!
+//! Not run on Windows: a test executable that links the Tauri runtime lacks
+//! the application manifest the real binary gets from the bundler, so it fails
+//! to load there (STATUS_ENTRYPOINT_NOT_FOUND). What is checked here, argument
+//! names and the error shape, does not depend on the operating system.
+#![cfg(not(windows))]
 
 mod support;
 
