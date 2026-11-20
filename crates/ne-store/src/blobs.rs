@@ -281,6 +281,24 @@ pub(crate) fn info(conn: &Connection, hash: &str) -> Result<Option<AttachmentInf
         .optional()?)
 }
 
+/// Every attachment record, oldest first.
+pub(crate) fn list(conn: &Connection) -> Result<Vec<AttachmentInfo>> {
+    let mut statement = conn.prepare_cached(
+        "SELECT hash, file_name, size, ref_count, created_at FROM attachments
+         ORDER BY created_at, hash",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(AttachmentInfo {
+            hash: row.get(0)?,
+            file_name: row.get(1)?,
+            size: row.get::<_, i64>(2)?.try_into().unwrap_or_default(),
+            ref_count: row.get::<_, i64>(3)?.try_into().unwrap_or_default(),
+            created_at: row.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 fn recount(conn: &Connection, hashes: &HashSet<String>) -> Result<()> {
     let mut statement = conn.prepare_cached(
         "UPDATE attachments

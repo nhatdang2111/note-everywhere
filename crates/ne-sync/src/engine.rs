@@ -118,6 +118,12 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Tells the engine that the store's outbox gained updates it queued
+    /// itself (not through [`submit`](Self::submit)), so they are sent soon.
+    pub fn wake(&self) {
+        let _ = self.commands.send(Command::Wake);
+    }
+
     pub fn status(&self) -> SyncStatus {
         self.status.borrow().clone()
     }

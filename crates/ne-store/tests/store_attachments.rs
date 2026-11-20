@@ -287,3 +287,23 @@ fn leftover_temporary_files_are_cleared_on_open() {
     let _ws = reopen(dir.path());
     assert!(fs::read_dir(&tmp).expect("tmp dir").next().is_none());
 }
+
+#[test]
+fn attachments_lists_every_record_with_its_reference_count() {
+    let (_dir, mut ws) = new_workspace();
+    assert!(ws.attachments().expect("empty list").is_empty());
+    let shown = ws.add_attachment("shown.png", b"first").expect("add");
+    let loose = ws.add_attachment("loose.png", b"second").expect("add");
+    page_with(&mut ws, "P", &[image(&shown.hash)]);
+    let mut listed = ws.attachments().expect("list");
+    listed.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    assert_eq!(listed.len(), 2);
+    assert_eq!(
+        (listed[0].hash.as_str(), listed[0].ref_count),
+        (loose.hash.as_str(), 0)
+    );
+    assert_eq!(
+        (listed[1].hash.as_str(), listed[1].ref_count),
+        (shown.hash.as_str(), 1)
+    );
+}

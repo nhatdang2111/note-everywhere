@@ -96,6 +96,18 @@ impl Vault {
         Ok(())
     }
 
+    /// The full stored content of an item, for merging an edit into it. It
+    /// needs no recent authentication because the caller is the application
+    /// itself re-sealing the result; it must never be shown or sent anywhere.
+    pub fn draft_of(&self, id: &ItemId) -> Result<ItemDraft> {
+        let content = &self.entry(id)?.content;
+        Ok(ItemDraft {
+            title: content.title.clone(),
+            tags: content.tags.clone(),
+            body: content.body.clone(),
+        })
+    }
+
     /// One item without its secret fields.
     pub fn get(&self, id: &ItemId) -> Result<ItemView> {
         Ok(ItemView::of(*id, &self.entry(id)?.content))

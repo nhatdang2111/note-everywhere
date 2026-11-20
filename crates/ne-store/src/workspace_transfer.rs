@@ -110,6 +110,11 @@ impl Workspace {
         blobs::info(&self.conn, hash)
     }
 
+    /// Every stored attachment record, oldest first.
+    pub fn attachments(&self) -> Result<Vec<AttachmentInfo>> {
+        blobs::list(&self.conn)
+    }
+
     /// The content of an attachment.
     pub fn read_attachment(&self, hash: &str) -> Result<Vec<u8>> {
         let info = self

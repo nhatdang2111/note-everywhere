@@ -416,3 +416,25 @@ fn tombstoned_ids_are_visible_but_not_listed() {
     assert!(doc.item_ids().is_empty());
     assert_eq!(doc.deleted_ids(), [id]);
 }
+
+#[test]
+fn draft_of_returns_the_stored_content_without_asking_for_the_password() {
+    let (mut vault, clock, account) = locked_vault(LockPolicy::default());
+    vault.unlock_with_password(PASSWORD).expect("unlock");
+    let id = vault.add(login("Mail", "alice", "hunter2")).expect("add");
+    clock.advance_secs(3600);
+    assert_eq!(
+        vault.reveal(&id, Field::Password).err(),
+        Some(VaultError::ReauthRequired(SensitiveAction::Reveal))
+    );
+    let draft = vault.draft_of(&id).expect("draft");
+    assert_eq!(draft.title, "Mail");
+    assert_eq!(
+        draft.body.field(Field::Password),
+        Some("hunter2"),
+        "the application merges edits into it"
+    );
+    vault.lock();
+    assert_eq!(vault.draft_of(&id).err(), Some(VaultError::Locked));
+    drop(account);
+}
