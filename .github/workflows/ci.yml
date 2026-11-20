@@ -40,6 +40,9 @@ jobs:
       - name: Install UI dependencies
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
+      - name: Test UI
+        working-directory: apps/desktop
+        run: pnpm test
       - name: Build UI
         working-directory: apps/desktop
         run: pnpm build

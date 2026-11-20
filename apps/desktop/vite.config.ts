@@ -1,4 +1,5 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
+import solid from "vite-plugin-solid";
 import wasm from "vite-plugin-wasm";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
@@ -9,8 +10,19 @@ export default defineConfig(() => ({
   // loro-crdt ships as an ES-module WebAssembly import (`import ... from "x.wasm"`).
   // Its initialisation awaits at the top level, which every webview Tauri 2 targets
   // supports (Safari 15+, WebView2), so no downlevel plugin is needed.
-  plugins: [wasm()],
+  plugins: [solid(), wasm()],
   build: { target: "esnext" },
+
+  test: {
+    environment: "jsdom",
+    include: ["src/**/*.test.{ts,tsx}"],
+    setupFiles: ["src/test/setup.ts"],
+    restoreMocks: true,
+    // Tests run in Node, which cannot load the bundler build of loro-crdt (it
+    // imports the .wasm file as an ES module). Use the Node build, the same one
+    // loro-prosemirror resolves on its own, so both share one instance.
+    alias: { "loro-crdt": "loro-crdt/nodejs" },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

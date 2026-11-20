@@ -1,4 +1,5 @@
 import { Schema, type MarkSpec, type NodeSpec } from "prosemirror-model";
+import { parsePageHref } from "./page-links.ts";
 
 /**
  * Page schema: the 13 block kinds of the v1 spec (15 counting heading levels
@@ -196,7 +197,10 @@ const marks: Record<string, MarkSpec> = {
     attrs: { href: { default: "" } },
     // A link must not grow when the user types right after it.
     inclusive: false,
-    toDOM: (mark) => ["a", { href: mark.attrs.href as string }, 0],
+    toDOM: (mark) => {
+      const href = mark.attrs.href as string;
+      return parsePageHref(href) ? ["a", { href, class: "ne-inline-page" }, 0] : ["a", { href }, 0];
+    },
     parseDOM: [
       {
         tag: "a[href]",

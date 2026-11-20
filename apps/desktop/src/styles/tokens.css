@@ -1,0 +1,136 @@
+/* Design tokens. Source of truth: docs/design-guidelines.md. */
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --c-bg-app: #f4f0e8;
+  --c-bg-sidebar: #ece7dc;
+  --c-bg-surface: #fbfaf6;
+  --c-bg-raised: #ffffff;
+  --c-bg-hover: rgb(37 34 29 / 7%);
+  --c-bg-active: rgb(37 34 29 / 12%);
+  --c-bg-selected: #dcd5c5;
+  --c-bg-code: #eee9de;
+  --c-overlay: rgb(30 27 22 / 45%);
+
+  /* Lines */
+  --c-border: #d5ccbb;
+  --c-border-strong: #7d7561;
+
+  /* Text */
+  --c-text: #25221d;
+  --c-text-muted: #5b5548;
+  --c-text-faint: #675f51;
+
+  /* Accent (deep teal) */
+  --c-accent: #0f6b67;
+  --c-accent-hover: #0b5753;
+  --c-accent-text: #ffffff;
+  --c-accent-soft: #d3e8e4;
+  --c-accent-on-soft: #0a4d4a;
+
+  /* Status */
+  --c-danger: #b3261e;
+  --c-danger-soft: #f6dcd8;
+  --c-warning: #7a4e00;
+  --c-warning-soft: #f3e3bd;
+  --c-success: #1c6f3a;
+  --c-success-soft: #d5ecdb;
+
+  /* Highlights */
+  --c-mark: #ffe58a;
+  --c-mark-current: #ffb454;
+  --c-focus: #0f6b67;
+
+  /* Type */
+  --font-ui: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-md: 0.9375rem;
+  --fs-lg: 1.0625rem;
+  --fs-xl: 1.25rem;
+  --fs-2xl: 1.5rem;
+  --fs-3xl: 1.875rem;
+  --fs-title: 2.25rem;
+  --lh-tight: 1.25;
+  --lh-body: 1.55;
+
+  /* Space (4px grid) */
+  --sp-1: 0.125rem;
+  --sp-2: 0.25rem;
+  --sp-3: 0.5rem;
+  --sp-4: 0.75rem;
+  --sp-5: 1rem;
+  --sp-6: 1.5rem;
+  --sp-7: 2rem;
+  --sp-8: 3rem;
+
+  /* Radii */
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+
+  /* Elevation */
+  --shadow-popover: 0 8px 28px rgb(30 27 22 / 18%), 0 1px 3px rgb(30 27 22 / 16%);
+  --shadow-dialog: 0 18px 60px rgb(30 27 22 / 28%), 0 2px 6px rgb(30 27 22 / 18%);
+
+  /* Motion */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  /* Layout */
+  --sidebar-w: 280px;
+  --content-w: 46rem;
+  --topbar-h: 44px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --c-bg-app: #1a1814;
+  --c-bg-sidebar: #141310;
+  --c-bg-surface: #201e19;
+  --c-bg-raised: #2a2721;
+  --c-bg-hover: rgb(236 231 221 / 8%);
+  --c-bg-active: rgb(236 231 221 / 14%);
+  --c-bg-selected: #3a362d;
+  --c-bg-code: #29261f;
+  --c-overlay: rgb(0 0 0 / 60%);
+
+  --c-border: #3b372e;
+  --c-border-strong: #8a8372;
+
+  --c-text: #ece7dd;
+  --c-text-muted: #b3ac9b;
+  --c-text-faint: #958e7d;
+
+  --c-accent: #5cc2ba;
+  --c-accent-hover: #7bd3cc;
+  --c-accent-text: #08201e;
+  --c-accent-soft: #1f3d3a;
+  --c-accent-on-soft: #a6e3de;
+
+  --c-danger: #ff8d84;
+  --c-danger-soft: #4a2420;
+  --c-warning: #f0c36a;
+  --c-warning-soft: #44360f;
+  --c-success: #7fd49a;
+  --c-success-soft: #1d3d29;
+
+  --c-mark: #6b5a12;
+  --c-mark-current: #9a5d12;
+  --c-focus: #7bd3cc;
+
+  --shadow-popover: 0 8px 28px rgb(0 0 0 / 55%), 0 1px 3px rgb(0 0 0 / 50%);
+  --shadow-dialog: 0 18px 60px rgb(0 0 0 / 65%), 0 2px 6px rgb(0 0 0 / 50%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+  }
+}

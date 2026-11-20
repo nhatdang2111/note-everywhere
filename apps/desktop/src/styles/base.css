@@ -1,0 +1,122 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--lh-body);
+  color: var(--c-text);
+  background: var(--c-bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: var(--lh-tight);
+  font-weight: 600;
+}
+h1 {
+  font-size: var(--fs-2xl);
+}
+h2 {
+  font-size: var(--fs-xl);
+}
+h3 {
+  font-size: var(--fs-lg);
+}
+p {
+  margin: 0;
+}
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+dl {
+  margin: 0;
+}
+dd {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+}
+
+/* Keyboard focus is always visible. */
+:focus-visible {
+  outline: 2px solid var(--c-focus);
+  outline-offset: 1px;
+}
+.tree-row:focus-visible,
+.menu-item:focus-visible {
+  outline-offset: -2px;
+}
+
+::selection {
+  background: var(--c-accent-soft);
+  color: var(--c-accent-on-soft);
+}
+
+kbd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  color: var(--c-text-muted);
+}
+
+mark {
+  background: var(--c-mark);
+  color: inherit;
+  border-radius: 2px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.muted {
+  color: var(--c-text-muted);
+  font-size: var(--fs-sm);
+}
+
+.icon {
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+  }
+}
