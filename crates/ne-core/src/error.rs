@@ -49,6 +49,25 @@ pub enum Error {
     /// The CRDT engine rejected the operation or the bytes handed to it.
     #[error("crdt error: {0}")]
     Crdt(String),
+    /// A page document does not have the container layout the editor binding
+    /// produces (a required key is missing or has the wrong type).
+    #[error("invalid page document: {0}")]
+    InvalidPage(String),
+    /// A block path does not point at an existing block.
+    #[error("no block at path {0:?}")]
+    NoSuchBlock(Vec<usize>),
+    /// A block cannot be written because it would violate the page schema.
+    #[error("invalid block: {0}")]
+    InvalidBlock(String),
+    /// Reading or writing files for Markdown import or export failed.
+    #[error("i/o error: {0}")]
+    Io(String),
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err.to_string())
+    }
 }
 
 impl From<loro::LoroError> for Error {

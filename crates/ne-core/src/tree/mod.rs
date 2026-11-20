@@ -124,6 +124,13 @@ impl WorkspaceTree {
         self.doc.peer_id()
     }
 
+    /// Sets this replica's id, for a tree loaded from storage that should keep
+    /// the device's stable id. Do it before the first local edit; ids must be
+    /// distinct across replicas.
+    pub fn set_peer_id(&self, peer_id: u64) -> Result<()> {
+        Ok(self.doc.set_peer_id(peer_id)?)
+    }
+
     /// Exports the full state, including history, for storage or first sync.
     pub fn export_snapshot(&self) -> Result<Vec<u8>> {
         self.doc.commit();

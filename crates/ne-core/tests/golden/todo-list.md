@@ -1,0 +1,2 @@
+- [x] Đã xong
+- [ ] Chưa xong
