@@ -1,0 +1,15 @@
+[package]
+name = "ne-core"
+description = "Block, page and workspace-tree model built on CRDT documents."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+loro = "1.18.0"

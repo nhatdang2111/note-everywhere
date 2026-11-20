@@ -1,0 +1,12 @@
+[package]
+name = "ne-voice"
+description = "Audio capture and offline speech-to-text."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

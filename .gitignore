@@ -1,0 +1,31 @@
+# Rust
+/target/
+/server/target/
+/server/build/
+
+# Node
+node_modules/
+dist/
+
+# Cloudflare
+.wrangler/
+.dev.vars
+
+# Secrets and local config
+.env
+.env.*
+*.pem
+*.key
+
+# Spike inputs that must not be published
+/spikes/**/models/
+/spikes/**/audio/
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Internal planning notes stay local
+/plans/

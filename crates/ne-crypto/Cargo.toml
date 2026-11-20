@@ -1,0 +1,16 @@
+[package]
+name = "ne-crypto"
+description = "Password key derivation, key wrapping and authenticated encryption."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+argon2 = "0.6.0"
+hkdf = "0.13.0"
+sha2 = "0.11.0"
+zeroize = { version = "1.9.2", features = ["derive"] }
