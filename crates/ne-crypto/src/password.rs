@@ -7,6 +7,7 @@
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -17,7 +18,7 @@ const ENCRYPTION_INFO: &[u8] = b"note-everywhere/v1/encryption-key";
 
 /// Argon2id cost settings. Stored next to the salt so they can be raised later
 /// without locking out existing accounts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KdfParams {
     pub memory_kib: u32,
     pub iterations: u32,
@@ -32,6 +33,51 @@ impl KdfParams {
         iterations: 3,
         parallelism: 4,
     };
+}
+
+/// Bounds accepted for KDF parameters that arrive from outside, such as a
+/// server record. Without a floor, a malicious server could hand back weak
+/// parameters so the auth key the client then sends is cheap to brute-force;
+/// without a ceiling it could exhaust the client's memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KdfPolicy {
+    pub min_memory_kib: u32,
+    pub max_memory_kib: u32,
+    pub min_iterations: u32,
+    pub max_iterations: u32,
+    pub max_parallelism: u32,
+}
+
+impl KdfPolicy {
+    /// For real accounts: at least 19 MiB and 2 passes (the OWASP minimum for
+    /// Argon2id), at most 1 GiB, 16 passes and 16 lanes.
+    pub const PRODUCTION: Self = Self {
+        min_memory_kib: 19 * 1024,
+        max_memory_kib: 1024 * 1024,
+        min_iterations: 2,
+        max_iterations: 16,
+        max_parallelism: 16,
+    };
+
+    /// Only the upper limits of [`Self::PRODUCTION`]; lets tests and tools use
+    /// tiny parameters. Never use it for real accounts.
+    pub const LENIENT: Self = Self {
+        min_memory_kib: 8,
+        min_iterations: 1,
+        ..Self::PRODUCTION
+    };
+
+    /// Accepts `params` only when every value is inside the policy.
+    pub fn check(&self, params: &KdfParams) -> Result<(), KdfError> {
+        let ok = (self.min_memory_kib..=self.max_memory_kib).contains(&params.memory_kib)
+            && (self.min_iterations..=self.max_iterations).contains(&params.iterations)
+            && (1..=self.max_parallelism).contains(&params.parallelism);
+        if ok {
+            Ok(())
+        } else {
+            Err(KdfError::OutOfPolicy)
+        }
+    }
 }
 
 /// Keys derived from one password. Wiped from memory when dropped.
@@ -53,10 +99,12 @@ impl DerivedKeys {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KdfError {
     SaltTooShort,
     InvalidParams,
+    /// Parameters are valid for Argon2 but outside the accepted [`KdfPolicy`].
+    OutOfPolicy,
     DerivationFailed,
 }
 
@@ -65,6 +113,7 @@ impl std::fmt::Display for KdfError {
         let message = match self {
             Self::SaltTooShort => "salt must be at least 16 bytes",
             Self::InvalidParams => "Argon2 parameters are out of range",
+            Self::OutOfPolicy => "Argon2 parameters are outside the accepted policy",
             Self::DerivationFailed => "key derivation failed",
         };
         f.write_str(message)
@@ -145,6 +194,29 @@ mod tests {
         assert_ne!(base.encryption_key(), other_password.encryption_key());
         assert_ne!(base.auth_key(), other_salt.auth_key());
         assert_ne!(base.encryption_key(), other_salt.encryption_key());
+    }
+
+    #[test]
+    fn policy_rejects_weak_and_excessive_params() {
+        assert_eq!(KdfPolicy::PRODUCTION.check(&KdfParams::DEFAULT), Ok(()));
+        assert_eq!(
+            KdfPolicy::PRODUCTION.check(&FAST),
+            Err(KdfError::OutOfPolicy)
+        );
+        let huge = KdfParams {
+            memory_kib: u32::MAX,
+            ..KdfParams::DEFAULT
+        };
+        assert_eq!(KdfPolicy::LENIENT.check(&huge), Err(KdfError::OutOfPolicy));
+        let no_lanes = KdfParams {
+            parallelism: 0,
+            ..FAST
+        };
+        assert_eq!(
+            KdfPolicy::LENIENT.check(&no_lanes),
+            Err(KdfError::OutOfPolicy)
+        );
+        assert_eq!(KdfPolicy::LENIENT.check(&FAST), Ok(()));
     }
 
     #[test]

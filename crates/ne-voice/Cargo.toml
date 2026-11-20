@@ -10,3 +10,23 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+cpal = "0.18.2"
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+unicode-normalization = "0.1.26"
+ureq = { version = "3.5.2", default-features = false, features = ["native-tls-no-default"] }
+whisper-rs = { version = "0.16.0", optional = true }
+
+[dev-dependencies]
+hound = "3.5.1"
+
+[features]
+# whisper.cpp needs cmake and libclang at compile time, so the speech-to-text
+# engine is opt-in. Capture, VAD, model management and WER work without it.
+transcribe = ["dep:whisper-rs"]
+metal = ["transcribe", "whisper-rs/metal"]
+vulkan = ["transcribe", "whisper-rs/vulkan"]
+
+[[example]]
+name = "measure-transcription"
+required-features = ["transcribe"]

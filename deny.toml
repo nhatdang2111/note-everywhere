@@ -3,6 +3,10 @@ all-features = true
 
 [advisories]
 version = 2
+# quick-xml 0.38 is pinned by `plist`, which Tauri uses to read this app's own
+# bundle metadata. It never parses untrusted XML here, so the two denial-of-
+# service advisories do not apply. Remove once Tauri's dependency moves on.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
 
 [licenses]
 version = 2
@@ -20,6 +24,7 @@ allow = [
     "CC0-1.0",
     "BSL-1.0",
     "CDLA-Permissive-2.0",
+    "Unlicense",
 ]
 confidence-threshold = 0.9
 

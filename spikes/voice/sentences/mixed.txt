@@ -1,0 +1,10 @@
+Mai tôi phải deploy bản mới lên server trước 5 giờ chiều.
+Cần review pull request của Nam và merge vào nhánh main.
+Họp sprint planning lúc 10 giờ, nhớ chuẩn bị slide về roadmap quý bốn.
+Ghi chú này phải được encrypt trước khi sync lên cloud.
+Tôi muốn thêm tính năng dark mode và export file PDF cho ứng dụng.
+Backup database mỗi đêm lúc 2 giờ sáng bằng một cron job.
+Gửi email cho khách hàng về lỗi login và hẹn gọi video call vào thứ năm.
+Cần tối ưu performance của trang dashboard vì load mất hơn 3 giây.
+Tạo một repository mới trên GitHub cho dự án và thêm file README.
+Nhớ cập nhật password manager và bật two factor authentication cho tài khoản email.
