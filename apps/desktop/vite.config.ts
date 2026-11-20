@@ -1,10 +1,16 @@
 import { defineConfig } from "vite";
+import wasm from "vite-plugin-wasm";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
+  // loro-crdt ships as an ES-module WebAssembly import (`import ... from "x.wasm"`).
+  // Its initialisation awaits at the top level, which every webview Tauri 2 targets
+  // supports (Safari 15+, WebView2), so no downlevel plugin is needed.
+  plugins: [wasm()],
+  build: { target: "esnext" },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

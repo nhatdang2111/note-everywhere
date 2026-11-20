@@ -106,12 +106,15 @@ Server không đặt lại được mật khẩu vì không có khoá nào. Các
 - **Không xoay khoá.** Đổi mật khẩu không đổi khoá gốc. Nếu kẻ tấn công từng có bản khoá gốc đã bọc và biết mật khẩu cũ (hoặc recovery key), việc đổi mật khẩu sau đó không thu hồi được quyền đó. Recovery key cũng được giữ nguyên khi đổi mật khẩu. Xoay khoá gốc và khoá workspace đòi hỏi mã hoá lại dữ liệu và chưa có.
 - **Không thu hồi từng thiết bị.** Mọi thiết bị đã đăng nhập đều có khoá workspace. Thu hồi phiên chỉ chặn truy cập server, không làm thiết bị đó quên khoá.
 - **Mật khẩu chỉ bị chặn khi rỗng** trong crate. Độ dài tối thiểu và cảnh báo trùng mật khẩu là việc của giao diện.
-- **Giới hạn số lần đăng nhập sai và quản lý phiên** thuộc về server, chưa có.
+- **Giới hạn số lần đăng nhập sai và quản lý phiên** do server đảm nhận: khoá tạm thời tăng dần theo tài khoản và theo địa chỉ IP, token phiên chỉ lưu dạng băm, có hết hạn và thu hồi. Chi tiết ở `docs/sync-protocol.md`.
 - **Luồng file**: giải mã ghi từng khối ra sau khi khối đó xác thực, nhưng một luồng bị cắt hoặc sửa chỉ bị phát hiện khi chạm khối hỏng. Người gọi phải bỏ đầu ra (ví dụ file tạm) nếu có lỗi.
 - **Số khối tối đa** theo chỉ số u64, không thực tế để chạm tới.
 - **Lỗi bộ sinh số ngẫu nhiên của hệ điều hành làm tiến trình panic** thay vì tiếp tục với khoá hay nonce đoán được được.
 - **Nonce ngẫu nhiên 192 bit** cho update và khoá bọc; không có bộ đếm. Xác suất trùng với một khoá có thể bỏ qua ở quy mô một người dùng.
-- Việc build cho `wasm32-unknown-unknown` của module `auth` (dùng trong Worker) chưa được kiểm chứng: lệnh kiểm tra bị chặn trong môi trường phát triển. Trên máy chủ, `cargo check -p ne-crypto --no-default-features` chạy sạch và chỉ kéo vào `sha2` và `subtle`.
+- Module `auth` (dùng trong Worker) biên dịch được cho `wasm32-unknown-unknown`: server phụ thuộc vào `ne-crypto` không kèm tính năng mặc định và CI kiểm tra việc này ở mỗi commit.
+- **Vault**: mỗi mục là một bản ghi được niêm phong toàn bộ, kể cả tiêu đề và thẻ; khi hai máy sửa cùng một mục thì một phiên bản trọn vẹn thắng, và xoá luôn thắng sửa. Xem, sao chép và xuất secret đòi nhập lại mật khẩu cấp 2 sau một khoảng thời gian. Kích thước bản ghi đã niêm phong vẫn để lộ độ dài xấp xỉ của mục.
+- **Tự khoá vault**: dựa trên thời gian idle và phát hiện máy ngủ bằng cách so đồng hồ; chưa phát hiện được sự kiện khoá màn hình. Phát hiện máy ngủ có thể báo nhầm (app bị treo, đồng hồ nhảy tới) và bỏ sót lần ngủ ngắn hơn 15 giây.
+- **Kho bảo mật của hệ điều hành** (login keychain trên macOS, Credential Manager trên Windows) chỉ giữ token phiên và khoá gốc tài khoản để không phải nhập mật khẩu mỗi lần mở app. Khoá vault không bao giờ được lưu ở đó. Phần mềm độc hại chạy cùng tài khoản người dùng có thể đọc được hai giá trị này.
 
 ## 6. Ngoài phạm vi
 

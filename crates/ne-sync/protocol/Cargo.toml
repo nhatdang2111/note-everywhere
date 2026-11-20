@@ -1,0 +1,19 @@
+[package]
+name = "ne-sync-protocol"
+description = "Wire formats and limits shared by the sync client and the sync Worker."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+# Pure data and codecs: no I/O, no OS dependencies, so the same crate compiles
+# natively for the client and to wasm32 for the Worker.
+[dependencies]
+base64 = "0.23.1"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"

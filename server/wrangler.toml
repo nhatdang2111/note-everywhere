@@ -1,3 +1,12 @@
+# Note Everywhere sync server.
+#
+# Always pass an environment: `wrangler dev --env dev` locally and
+# `wrangler deploy --env production` for your own Cloudflare account. Bindings
+# are declared per environment on purpose so the two never share state.
+#
+# No account id and no secret belongs in this file. The setup code is a Worker
+# secret: `wrangler secret put SETUP_CODE --env production`.
+
 name = "note-everywhere-sync"
 main = "build/index.js"
 compatibility_date = "2026-11-01"
@@ -5,10 +14,49 @@ compatibility_date = "2026-11-01"
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 
-[[durable_objects.bindings]]
+# --- local development (`wrangler dev --env dev`) ---------------------------
+
+[env.dev]
+name = "note-everywhere-sync-dev"
+
+[env.dev.vars]
+BLOB_MAX_BYTES = "67108864"
+BLOB_QUOTA_BYTES = "8589934592"
+SESSION_TTL_DAYS = "30"
+
+[[env.dev.durable_objects.bindings]]
 name = "WORKSPACE"
 class_name = "Workspace"
 
-[[migrations]]
+[[env.dev.migrations]]
 tag = "v1"
 new_sqlite_classes = ["Workspace"]
+
+[[env.dev.r2_buckets]]
+binding = "BLOBS"
+bucket_name = "note-everywhere-blobs-dev"
+
+# --- your own deployment (`wrangler deploy --env production`) ----------------
+
+[env.production]
+name = "note-everywhere-sync"
+
+[env.production.vars]
+# Largest single attachment object; the free plan limits request bodies to
+# 100 MB, and the server never accepts more than 90 MiB whatever is set here.
+BLOB_MAX_BYTES = "67108864"
+# Total attachment bytes the server will index. R2's free allowance is 10 GB.
+BLOB_QUOTA_BYTES = "8589934592"
+SESSION_TTL_DAYS = "30"
+
+[[env.production.durable_objects.bindings]]
+name = "WORKSPACE"
+class_name = "Workspace"
+
+[[env.production.migrations]]
+tag = "v1"
+new_sqlite_classes = ["Workspace"]
+
+[[env.production.r2_buckets]]
+binding = "BLOBS"
+bucket_name = "note-everywhere-blobs"
