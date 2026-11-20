@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest an improvement or a new capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please check the product spec (`docs/product-spec.md`): section 11 lists what is already planned after the first version and section 12 lists what is deliberately out of scope (mobile, web, Linux, multiple users, sharing, comments, an AI assistant, a public API, telemetry).
+
+        Describe the problem in your own words. Please do not copy text, screenshots or designs from other products; the project is clean-room.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What should happen instead, from the user's point of view.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: privacy
+    attributes:
+      label: Does it touch data leaving the device or the encryption design?
+      options:
+        - "No"
+        - "Yes, and I describe how in the proposal"
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: It is not in the "out of scope" list of the product spec.
+          required: true
+        - label: It does not need telemetry or sending plaintext to a server.
+          required: true

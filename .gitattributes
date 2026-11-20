@@ -1,0 +1,7 @@
+# Check text out with LF everywhere so golden-file tests see the same bytes on
+# Windows as on macOS.
+* text=auto eol=lf
+*.loro binary
+*.png binary
+*.ico binary
+*.icns binary

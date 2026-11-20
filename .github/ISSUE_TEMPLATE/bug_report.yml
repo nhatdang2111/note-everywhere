@@ -1,0 +1,87 @@
+name: Bug report
+description: Something does not work as described
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please read this first:
+
+        - **Security problems do not belong here.** Report them privately, see `SECURITY.md` in the repository root.
+        - **Never paste real notes, passwords, recovery keys, session tokens or your server address.** Use invented data and describe it.
+        - The project is pre-release: the desktop app is still being connected to the Rust core, so some screens are expected to be incomplete. Check the README status section first.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release version or commit hash, and how you installed it (release installer or built from source).
+      placeholder: "0.1.0 from a release installer, or commit abc1234 built from source"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows 11
+        - Windows 10
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Editor and blocks
+        - Pages, folders, trash
+        - Search and links
+        - Markdown import or export
+        - Sync or sync server
+        - Vault
+        - Speech-to-text
+        - Install or first launch
+        - Documentation
+        - Other or not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from a fresh launch if you can.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error messages or logs
+      description: Remove anything private (notes, URLs, usernames, tokens) before pasting.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I removed real notes, passwords, keys, tokens and server addresses from this report.
+          required: true

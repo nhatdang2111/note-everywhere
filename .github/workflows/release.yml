@@ -1,0 +1,292 @@
+# Release pipeline: unsigned desktop installers on a DRAFT GitHub release.
+#
+# Triggers
+#   - Push of a tag `vX.Y.Z` (or `vX.Y.Z-rc.1`): builds everything and creates a
+#     draft release. A human reviews the draft and publishes it.
+#   - Manual dispatch: dry run. Builds, uploads workflow artifacts and checksums,
+#     creates no release.
+#
+# Signing
+#   - macOS is ad-hoc signed only (no Apple Developer ID, no notarisation).
+#   - Windows installers are not code-signed.
+#   - Tauri updater artifacts (`*.sig`, `*.app.tar.gz`) are produced only when the
+#     repository secret TAURI_SIGNING_PRIVATE_KEY exists; without it the workflow
+#     still succeeds and the job summary says updater artifacts were skipped.
+#
+# Status: this workflow has never been executed. Treat the first run as a dry run
+# (manual dispatch) and read docs/release-checklist.md before pushing a tag.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Cargo features of the desktop crate (apps/desktop/src-tauri), comma separated,
+  # one variable per platform. Every name must exist in that crate's Cargo.toml,
+  # otherwise the build fails. Leave a value empty for default features only.
+  MACOS_FEATURES: "transcribe,metal"
+  WINDOWS_FEATURES: ""
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  preflight:
+    name: Check version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Tag, app and workspace versions must agree
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          workspace_version=$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version[ ]*=/{gsub(/[" ]/,"",$0); split($0,a,"="); print a[2]; exit}' Cargo.toml)
+          if [ "$app_version" != "$workspace_version" ]; then
+            echo "::error::tauri.conf.json version ($app_version) differs from the workspace version in Cargo.toml ($workspace_version)"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$tag_version" != "$app_version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the app version $app_version"
+              exit 1
+            fi
+          fi
+          prerelease=false
+          case "$app_version" in *-*) prerelease=true ;; esac
+          echo "version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Desktop (${{ matrix.platform }})
+    needs: preflight
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            os: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            target_args: --target universal-apple-darwin
+            bundles: app,dmg
+            installer_glob: "*.dmg"
+          - platform: windows
+            os: windows-latest
+            rust_targets: ""
+            target_args: ""
+            bundles: nsis
+            installer_glob: "*-setup.exe"
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      # Only the boolean is exposed to the shell, never the key itself.
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.platform }}
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - name: Install UI dependencies
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Make sure cmake exists (needed by the transcription feature)
+        if: matrix.platform == 'macos'
+        run: command -v cmake >/dev/null || brew install cmake
+
+      - name: Remove stale bundles from the build cache
+        run: rm -rf target/release/bundle target/*/release/bundle release-files
+
+      - name: Plan the Tauri build
+        id: plan
+        env:
+          BUNDLES: ${{ matrix.bundles }}
+          TARGET_ARGS: ${{ matrix.target_args }}
+        run: |
+          set -euo pipefail
+          if [ "$PLATFORM" = "macos" ]; then features="$MACOS_FEATURES"; else features="$WINDOWS_FEATURES"; fi
+
+          # Settings merged over tauri.conf.json for this run only.
+          node -e '
+            const fs = require("fs");
+            const bundle = {};
+            if (process.env.PLATFORM === "macos") bundle.macOS = { signingIdentity: "-" };
+            if (process.env.HAS_UPDATER_KEY === "true") bundle.createUpdaterArtifacts = true;
+            fs.writeFileSync("apps/desktop/ci-bundle-config.json", JSON.stringify({ bundle }));
+          '
+
+          args="--bundles $BUNDLES --config ci-bundle-config.json"
+          if [ -n "$TARGET_ARGS" ]; then args="$args $TARGET_ARGS"; fi
+          if [ -n "$features" ]; then args="$args --features $features"; fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Build plan (${PLATFORM})"
+            echo ""
+            echo "- Tauri arguments: \`$args\`"
+            echo "- Cargo features: \`${features:-default}\`"
+            if [ "$PLATFORM" = "macos" ]; then echo "- macOS signing: ad-hoc only, not notarised"; fi
+            if [ "$HAS_UPDATER_KEY" = "true" ]; then
+              echo "- Updater artifacts: enabled (signing key secret found)"
+            else
+              echo "- Updater artifacts: **skipped**, secret \`TAURI_SIGNING_PRIVATE_KEY\` is not set"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$HAS_UPDATER_KEY" != "true" ]; then
+            echo "::notice title=Updater artifacts skipped::TAURI_SIGNING_PRIVATE_KEY is not set, so no updater signature files are produced."
+          fi
+
+      - name: Build the desktop app
+        uses: tauri-apps/tauri-action@v1
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # No tagName, releaseName or releaseId: the action only builds. The
+          # release is created once, in the last job, so both platforms land in
+          # the same draft together with the checksums.
+          projectPath: apps/desktop
+          tauriScript: pnpm tauri
+          args: ${{ steps.plan.outputs.args }}
+
+      - name: Collect installers
+        env:
+          INSTALLER_GLOB: ${{ matrix.installer_glob }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          while IFS= read -r -d '' f; do
+            name=$(basename "$f")
+            cp "$f" "release-files/${name// /-}"
+          done < <(find target -type f -path '*/release/bundle/*' \
+            \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' -o -name '*.sig' \) \
+            ! -name 'rw.*' -print0)
+          if ! compgen -G "release-files/$INSTALLER_GLOB" > /dev/null; then
+            echo "::error::no installer matching $INSTALLER_GLOB was produced"
+            exit 1
+          fi
+          if [ "$HAS_UPDATER_KEY" = "true" ] && ! compgen -G "release-files/*.sig" > /dev/null; then
+            echo "::error::updater signing key was provided but no .sig file was produced"
+            exit 1
+          fi
+          ls -l release-files
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: release-files/*
+          if-no-files-found: error
+          retention-days: 14
+
+  checksums:
+    name: Checksums
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-files
+
+      - name: SHA-256 of every artifact
+        run: |
+          set -euo pipefail
+          cd release-files
+          sha256sum -- * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+          {
+            echo "### Artifacts and SHA-256"
+            echo ""
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+            if [ "$GITHUB_EVENT_NAME" != "push" ]; then
+              echo ""
+              echo "Manual run: dry run, no release was created."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-bundle
+          path: release-files/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Draft release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [preflight, checksums]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-bundle
+          path: release-files
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'EOF'
+          **These installers are not code-signed.** macOS and Windows will warn the first time you open the app. Check the download against `SHA256SUMS.txt` and follow the first-launch steps in the README section "Install from a release".
+
+          The cryptographic code has not had an independent security review yet.
+
+          ---
+          EOF
+          flags=(--draft --generate-notes --verify-tag --title "Note Everywhere $GITHUB_REF_NAME" --notes-file release-notes.md)
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          # Fails if a release for this tag already exists: delete the stale
+          # draft first, then re-run the job.
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" release-files/*
+          echo "Draft release created for $GITHUB_REF_NAME. Review it and publish by hand." >> "$GITHUB_STEP_SUMMARY"
