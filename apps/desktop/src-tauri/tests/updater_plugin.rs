@@ -4,7 +4,9 @@
 //! installed (downloading verifies the package, installing is a separate step
 //! that these tests never take).
 
-#![cfg(desktop)]
+// Not run on Windows for the same reason as `ipc.rs`: a test executable that
+// links the Tauri runtime has no application manifest there and fails to load.
+#![cfg(all(desktop, not(windows)))]
 
 use std::collections::HashMap;
 use std::io::Cursor;
