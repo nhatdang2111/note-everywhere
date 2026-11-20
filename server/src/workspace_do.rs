@@ -42,6 +42,8 @@ impl Workspace {
         match (req.method(), path.as_str()) {
             (Method::Post, "/v1/account/salt") => self.salt(&mut req).await,
             (Method::Post, "/v1/account/register") => self.register(&mut req, &ip, now).await,
+            (Method::Post, "/v1/account/recovery") => self.recovery_lookup(&mut req).await,
+            (Method::Post, "/v1/account/recover") => self.recover(&mut req, &ip, now).await,
             (Method::Post, "/v1/session/login") => self.login(&mut req, &ip, now).await,
             (Method::Post, "/v1/session/logout") => self.logout(&req, now),
             (Method::Get, "/v1/sessions") => self.list_sessions(&req, now),
@@ -57,6 +59,10 @@ impl Workspace {
             (Method::Put, "/v1/workspace-key") => self.put_workspace_key(&mut req, now).await,
             (Method::Get, "/v1/workspace-key") => self.get_workspace_key(&req, now),
             (Method::Get, "/v1/sync") => self.accept_sync(&req, now),
+            (method, p) if p.starts_with("/v1/parts/") => {
+                self.part_request(method, req, &p["/v1/parts/".len()..], now)
+                    .await
+            }
             (method, p) if p.starts_with("/v1/blobs/") => {
                 let hash = hex_decode::<32>(&p["/v1/blobs/".len()..]).ok_or(ApiError::NotFound)?;
                 self.blob_request(method, req, hash, now).await

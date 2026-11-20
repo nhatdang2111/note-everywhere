@@ -7,15 +7,21 @@
 
 mod attachments;
 mod blob_index;
+pub mod db_api;
 pub mod deps;
 pub mod error;
 pub mod events;
+mod history_api;
 mod protocol;
+pub mod reminder_api;
 mod session;
 mod settings;
 mod sync;
 mod sync_store;
+pub mod synced_api;
+mod template_api;
 pub mod types;
+pub mod update;
 mod vault;
 mod vault_persist;
 mod voice;
@@ -37,11 +43,18 @@ use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-pub use deps::{Clipboard, Deps, Dialogs, Hotkeys, MemoryBackend, MemoryClipboard, SharedBackend};
+pub use deps::{
+    Clipboard, Deps, Dialogs, Hotkeys, MemoryBackend, MemoryClipboard, Notifier, NotifyPermission,
+    SharedBackend,
+};
 pub use error::{AppError, AppResult};
 pub use events::{CapturingSink, CoreEvent, EventSink};
 pub use protocol::{AttachmentResponse, SCHEME as ATTACHMENT_SCHEME};
 pub use sync::EngineTuning;
+pub use update::{
+    BoxFuture, NoUpdates, ProgressFn, UpdateBackend, UpdateFailure, UpdateOffer, UpdateState,
+    UpdateStatus,
+};
 
 use types::{SessionState, Settings, SyncStatus};
 
@@ -137,6 +150,7 @@ pub(crate) struct Inner {
     pub tasks: Mutex<Vec<JoinHandle<()>>>,
     pub session_gate: tokio::sync::Mutex<()>,
     pub last_compaction: Mutex<Option<std::time::Instant>>,
+    pub update: Mutex<update::UpdateData>,
 }
 
 /// Cheap to clone; every clone is the same application.
@@ -150,6 +164,10 @@ impl AppCore {
     /// stored session and starts syncing. Must run inside a tokio runtime.
     pub async fn open(cfg: AppConfig, deps: Deps) -> AppResult<Self> {
         let (idle_after, _) = watch::channel(None);
+        let update = update::UpdateData::new(
+            deps.updater.configured(),
+            update::read_last_check(&cfg.data_dir),
+        );
         let core = Self {
             inner: Arc::new(Inner {
                 cfg,
@@ -174,6 +192,7 @@ impl AppCore {
                 tasks: Mutex::new(Vec::new()),
                 session_gate: tokio::sync::Mutex::new(()),
                 last_compaction: Mutex::new(None),
+                update: Mutex::new(update),
             }),
         };
         let dir = core.inner.cfg.workspace_dir();

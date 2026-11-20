@@ -65,6 +65,7 @@ pub struct DeviceSession {
 pub enum NodeKind {
     Folder,
     Page,
+    Database,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -233,8 +234,7 @@ pub struct VoiceStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VoiceText {
     pub text: String,
-    /// The kept recording when "keep audio" is on; not part of the contract
-    /// yet, ignored by clients that do not know it.
+    /// The kept recording when "keep audio" is on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<AddedAttachment>,
 }
@@ -269,4 +269,25 @@ pub struct SettingsPatch {
     pub voice_hotkey: Option<String>,
     pub voice_language: Option<String>,
     pub voice_keep_audio: Option<bool>,
+}
+
+/// A reminder with what a list or a notification needs next to it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderEntryDto {
+    pub reminder: ne_core::reminders::Reminder,
+    pub due_at: i64,
+    pub page_title: String,
+    pub page_visible: bool,
+}
+
+impl From<ne_store::ReminderEntry> for ReminderEntryDto {
+    fn from(entry: ne_store::ReminderEntry) -> Self {
+        Self {
+            reminder: entry.reminder,
+            due_at: entry.due_at,
+            page_title: entry.page_title,
+            page_visible: entry.page_visible,
+        }
+    }
 }

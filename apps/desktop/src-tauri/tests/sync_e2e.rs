@@ -7,11 +7,16 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use ne_core::database::{CellValue, PropertyType, QuerySpec};
 use ne_core::page::{Block, PageDoc};
+use ne_crypto::recovery::RecoveryKey;
+use note_everywhere_desktop_lib::app::db_api::{DbPropertyAddArgs, DbQueryArgs, DbRowCreateArgs};
+use note_everywhere_desktop_lib::app::reminder_api::ReminderAddArgs;
 use note_everywhere_desktop_lib::app::types::{
-    CreateNodeArgs, NodeKind, SessionState, SignInArgs, SignUpArgs, SyncState,
+    CreateNodeArgs, NodeKind, RecoverAccountArgs, SessionState, SignInArgs, SignUpArgs, SyncState,
 };
 use note_everywhere_desktop_lib::app::{AppCore, CoreEvent};
+use serde_json::json;
 use support::proxy::Proxy;
 use support::{Device, PASSWORD, USERNAME};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -884,5 +889,533 @@ async fn two_different_vaults_are_not_merged() {
         a.core.sessions_list().await.expect("sessions").len(),
         1,
         "the refused session was closed again"
+    );
+}
+
+fn recover_args(url: &str, label: &str, key: &str, new_password: &str) -> RecoverAccountArgs {
+    RecoverAccountArgs {
+        server_url: url.into(),
+        username: USERNAME.into(),
+        recovery_key: key.into(),
+        new_password: new_password.into(),
+        device_label: label.into(),
+    }
+}
+
+#[tokio::test]
+async fn a_forgotten_password_is_recovered_on_a_new_device_with_data_intact() {
+    let server = server!();
+    let a = Device::new().await;
+    let recovery = a
+        .core
+        .sign_up(sign_up_args(&server.url, "a"))
+        .await
+        .expect("sign up");
+    let page = a
+        .core
+        .tree_create(page_args(None, "Notes"))
+        .await
+        .expect("page");
+    append(&a.core, &page, "written before the recovery").await;
+    synced(&a.core).await;
+
+    // Bad input is told apart before anything is changed.
+    let b = Device::new().await;
+    let args = |key: &str| recover_args(&server.url, "b", key, "recovered password");
+    assert_eq!(
+        b.core
+            .recover_account(args("not a key"))
+            .await
+            .expect_err("typo")
+            .code,
+        "invalid_recovery_key"
+    );
+    let other_key = RecoveryKey::generate().to_display_string().to_string();
+    assert_eq!(
+        b.core
+            .recover_account(args(&other_key))
+            .await
+            .expect_err("other key")
+            .code,
+        "wrong_recovery_key"
+    );
+    assert_eq!(
+        b.core.session_status().await.expect("s").state,
+        SessionState::Empty,
+        "a failed recovery creates nothing"
+    );
+
+    // The right key signs the new device in with the data of the account.
+    b.core
+        .recover_account(args(&recovery))
+        .await
+        .expect("recover");
+    let status = b.core.session_status().await.expect("status");
+    assert_eq!(
+        (status.state, status.username.as_deref()),
+        (SessionState::SignedIn, Some(USERNAME))
+    );
+    wait_for("b to receive the data", || async {
+        titles(&b.core).await == ["Notes"]
+            && text_of(&b.core, &page)
+                .await
+                .contains("written before the recovery")
+    })
+    .await;
+
+    // Every other device is signed out, the old password is refused, and the
+    // new one works.
+    wait_for("a to be signed out", || async {
+        a.core.session_status().await.expect("s").state == SessionState::NeedsSignIn
+    })
+    .await;
+    assert_eq!(
+        a.core
+            .sign_in(sign_in_args(&server.url, "a", PASSWORD))
+            .await
+            .expect_err("old password")
+            .code,
+        "wrong_password"
+    );
+    a.core
+        .sign_in(sign_in_args(&server.url, "a", "recovered password"))
+        .await
+        .expect("new password");
+    append(&b.core, &page, "after the recovery").await;
+    wait_for("a to receive b's edit", || async {
+        text_of(&a.core, &page).await.contains("after the recovery")
+    })
+    .await;
+    assert_eq!(
+        a.core.sessions_list().await.expect("sessions").len(),
+        2,
+        "the recovered device and the one that signed in again"
+    );
+
+    // The recovery key was not used up.
+    let c = Device::new().await;
+    c.core
+        .recover_account(recover_args(&server.url, "c", &recovery, "third password"))
+        .await
+        .expect("recover again");
+    wait_for("c to receive the data", || async {
+        titles(&c.core).await == ["Notes"]
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn recovery_is_refused_cleanly_for_an_account_without_a_verifier() {
+    let server = server!();
+    let a = Device::new().await;
+    let recovery = a
+        .core
+        .sign_up(sign_up_args(&server.url, "a"))
+        .await
+        .expect("sign up");
+    // Turn the account into one created before recovery could be verified.
+    let status = http_post(server.addr, "/v1/_test/strip-recovery").await;
+    assert!(status.contains("204"), "{status}");
+
+    let b = Device::new().await;
+    let error = b
+        .core
+        .recover_account(recover_args(&server.url, "b", &recovery, "x"))
+        .await
+        .expect_err("refused");
+    assert_eq!(error.code, "recovery_unavailable");
+    assert!(error.message.contains("password"), "{}", error.message);
+    assert_eq!(
+        b.core.session_status().await.expect("s").state,
+        SessionState::Empty,
+        "nothing is created by a refused recovery"
+    );
+    // The account stays usable with its password.
+    b.core
+        .sign_in(sign_in_args(&server.url, "b", PASSWORD))
+        .await
+        .expect("password still works");
+    assert_eq!(
+        a.core.session_status().await.expect("s").state,
+        SessionState::SignedIn
+    );
+}
+
+#[tokio::test]
+async fn the_session_list_reports_real_activity() {
+    let server = server!();
+    // Needs a server started with a short SESSION_TOUCH_SECONDS (see server/README.md).
+    let Some(interval) = std::env::var("NE_SYNC_TEST_TOUCH_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|secs| (1..=10).contains(secs))
+    else {
+        eprintln!("skipped: set NE_SYNC_TEST_TOUCH_SECONDS to the server's SESSION_TOUCH_SECONDS");
+        return;
+    };
+    let a = signed_up(&server, "a").await;
+    let first = a.core.sessions_list().await.expect("sessions");
+    assert_eq!(first[0].last_seen_at, first[0].created_at);
+
+    tokio::time::sleep(Duration::from_millis(interval * 1000 + 500)).await;
+    let page = a
+        .core
+        .tree_create(page_args(None, "Active"))
+        .await
+        .expect("page");
+    append(&a.core, &page, "work").await;
+    synced(&a.core).await;
+    let later = a.core.sessions_list().await.expect("sessions");
+    assert!(
+        later[0].last_seen_at >= later[0].created_at + interval * 1000,
+        "{} vs {}",
+        later[0].last_seen_at,
+        later[0].created_at
+    );
+}
+
+/// Text that does not compress, so the update really is that big.
+fn noise(len: usize) -> String {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            char::from(b'a' + (state % 26) as u8)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_page_far_above_the_row_limit_syncs_compacts_and_bootstraps() {
+    let server = server!();
+    let a = signed_up(&server, "a").await;
+    let page = a
+        .core
+        .tree_create(page_args(None, "Imported"))
+        .await
+        .expect("page");
+    let big = noise(5 * 1024 * 1024);
+    append(&a.core, &page, &big).await;
+    synced(&a.core).await;
+    let b = signed_in(&server.url, "b").await;
+    wait_for("b to receive the big page", || async {
+        titles(&b.core).await == ["Imported"]
+            && text_of(&b.core, &page).await.contains(&big[..1024])
+    })
+    .await;
+    assert_eq!(text_of(&b.core, &page).await, text_of(&a.core, &page).await);
+
+    // The snapshot of such a page is above the row limit as well; it is taken
+    // and a device that joins afterwards ends up with the same page.
+    let taken = a.core.compact_server_log(1).await.expect("compact");
+    assert!(taken >= 1, "the big page should have been snapshotted");
+    let c = signed_in(&server.url, "c").await;
+    wait_for("c to bootstrap", || async {
+        titles(&c.core).await == ["Imported"]
+            && text_of(&c.core, &page).await.contains(&big[..1024])
+    })
+    .await;
+    assert_eq!(text_of(&c.core, &page).await, text_of(&a.core, &page).await);
+}
+
+// ---- databases, templates, reminders and synced blocks ----
+
+const FAR_FUTURE: i64 = 1_900_000_000_000;
+
+/// The ids of the content `make_content` creates.
+struct Content {
+    db: String,
+    rows: Vec<String>,
+    amount: String,
+    meeting: String,
+    sync_id: String,
+}
+
+fn query_all(db: &str) -> DbQueryArgs {
+    DbQueryArgs {
+        id: db.to_owned(),
+        view_id: None,
+        spec: Some(QuerySpec::default()),
+        offset: None,
+        limit: None,
+    }
+}
+
+/// A database with rows and cell values, a page template, a reminder and a
+/// synced block whose shared content has been edited: one of each document
+/// kind that travels beside the pages.
+async fn make_content(core: &AppCore) -> Content {
+    let db = core
+        .db_create(None, None, Some("Tasks"))
+        .await
+        .expect("database");
+    let add = |name: &'static str, ty: PropertyType| {
+        let (core, db) = (core.clone(), db.clone());
+        async move {
+            core.db_property_add(DbPropertyAddArgs {
+                id: db,
+                name: name.into(),
+                ty,
+            })
+            .await
+            .expect("property")
+        }
+    };
+    let status = add("Status", PropertyType::Select).await;
+    let amount = add("Amount", PropertyType::Number).await;
+    let open = core
+        .db_option_add(&db, &status, "Open", Some("red"))
+        .await
+        .expect("option");
+    let mut rows = Vec::new();
+    for (n, title) in ["Alpha", "Beta", "Gamma"].into_iter().enumerate() {
+        let row = core
+            .db_row_create(DbRowCreateArgs {
+                id: db.clone(),
+                title: Some(title.into()),
+                index: None,
+                values: None,
+            })
+            .await
+            .expect("row");
+        core.db_cell_set(
+            &db,
+            &row,
+            &amount,
+            Some(CellValue::Number(
+                f64::from(u8::try_from(n).expect("small")) + 1.0,
+            )),
+        )
+        .await
+        .expect("cell");
+        core.db_cell_set(&db, &row, &status, Some(CellValue::Select(open.clone())))
+            .await
+            .expect("cell");
+        rows.push(row);
+    }
+
+    let meeting = core
+        .tree_create(page_args(None, "Meeting"))
+        .await
+        .expect("page");
+    append(core, &meeting, "agenda").await;
+    core.template_create_from_page(&meeting, "Minutes")
+        .await
+        .expect("template");
+    core.reminder_add(ReminderAddArgs {
+        page_id: meeting.clone(),
+        property_id: None,
+        at: Some(FAR_FUTURE),
+        utc_offset_minutes: 420,
+        note: Some("call back".into()),
+    })
+    .await
+    .expect("reminder");
+
+    let host = core
+        .tree_create(page_args(None, "Host"))
+        .await
+        .expect("page");
+    append(core, &host, "kept").await;
+    append(core, &host, "shared line").await;
+    let created = core.synced_create(&host, 2, 3).await.expect("synced block");
+    edit_shared(core, &created, "first edit of the shared block").await;
+    Content {
+        db,
+        rows,
+        amount,
+        meeting,
+        sync_id: created,
+    }
+}
+
+async fn edit_shared(core: &AppCore, sync_id: &str, text: &str) {
+    let snapshot = core.synced_open(sync_id).await.expect("open").snapshot;
+    let doc = PageDoc::from_snapshot(&snapshot).expect("doc");
+    let (_, update) = doc
+        .edit(|d| d.append_blocks(&[], &[Block::paragraph(text)]).map(drop))
+        .expect("edit");
+    core.synced_apply_update(sync_id, &update)
+        .await
+        .expect("apply");
+    core.synced_close(sync_id).await.expect("close");
+}
+
+/// Everything a person can see of the content, or `None` while part of it has
+/// not arrived on this device yet.
+async fn fingerprint(core: &AppCore, content: &Content) -> Option<serde_json::Value> {
+    let tree: Vec<_> = core
+        .tree_snapshot()
+        .await
+        .ok()?
+        .into_iter()
+        .map(|n| json!([n.id, n.parent_id, format!("{:?}", n.kind), n.title]))
+        .collect();
+    let schema = serde_json::to_value(core.db_schema(&content.db).await.ok()?).ok()?;
+    let rows = serde_json::to_value(core.db_query(query_all(&content.db)).await.ok()?).ok()?;
+    let templates = serde_json::to_value(core.template_list(None).await.ok()?).ok()?;
+    let reminders = serde_json::to_value(core.reminder_list(Some(true)).await.ok()?).ok()?;
+    let blocks = serde_json::to_value(core.synced_list().await.ok()?).ok()?;
+    let snapshot = core.synced_open(&content.sync_id).await.ok()?.snapshot;
+    core.synced_close(&content.sync_id).await.ok()?;
+    let shared = PageDoc::from_snapshot(&snapshot).ok()?.plain_text().ok()?;
+    let meeting = text_of(core, &content.meeting).await;
+    Some(json!({
+        "tree": tree, "schema": schema, "rows": rows, "templates": templates,
+        "reminders": reminders, "blocks": blocks, "shared": shared, "meeting": meeting,
+    }))
+}
+
+async fn complete_content(core: &AppCore, content: &Content) -> serde_json::Value {
+    let seen = fingerprint(core, content).await.expect("content");
+    assert_eq!(seen["rows"]["total"], json!(3));
+    assert_eq!(seen["templates"][0]["name"], json!("Minutes"));
+    assert_eq!(seen["reminders"][0]["reminder"]["note"], json!("call back"));
+    assert_eq!(seen["blocks"][0]["syncId"], json!(content.sync_id));
+    assert!(
+        seen["shared"]
+            .as_str()
+            .is_some_and(|t| t.contains("first edit of the shared block"))
+    );
+    seen
+}
+
+#[tokio::test]
+async fn new_document_kinds_created_on_one_device_appear_on_the_other_and_keep_syncing() {
+    let server = server!();
+    let a = signed_up(&server, "a").await;
+    let b = signed_in(&server.url, "b").await;
+    let content = make_content(&a.core).await;
+    synced(&a.core).await;
+    let want = complete_content(&a.core, &content).await;
+    wait_for("b to receive every kind of document", || async {
+        fingerprint(&b.core, &content).await.as_ref() == Some(&want)
+    })
+    .await;
+
+    // Later edits travel too, in both directions.
+    a.core
+        .db_cell_set(
+            &content.db,
+            &content.rows[0],
+            &content.amount,
+            Some(CellValue::Number(40.0)),
+        )
+        .await
+        .expect("cell on a");
+    b.core
+        .db_cell_set(
+            &content.db,
+            &content.rows[1],
+            &content.amount,
+            Some(CellValue::Number(50.0)),
+        )
+        .await
+        .expect("cell on b");
+    edit_shared(&b.core, &content.sync_id, "added on b").await;
+    let reminder = a.core.reminder_list(None).await.expect("list")[0]
+        .reminder
+        .id
+        .clone();
+    a.core
+        .reminder_set_note(&reminder, "renamed on a")
+        .await
+        .expect("note");
+    synced(&a.core).await;
+    synced(&b.core).await;
+    wait_for("both devices to agree after edits", || async {
+        let (one, two) = (
+            fingerprint(&a.core, &content).await,
+            fingerprint(&b.core, &content).await,
+        );
+        one.is_some() && one == two && one.as_ref() != Some(&want)
+    })
+    .await;
+    let now = fingerprint(&a.core, &content).await.expect("a");
+    assert_eq!(
+        now["reminders"][0]["reminder"]["note"],
+        json!("renamed on a")
+    );
+    assert!(
+        now["shared"]
+            .as_str()
+            .is_some_and(|t| t.contains("added on b"))
+    );
+    let amounts = serde_json::to_string(&now["rows"]["rows"]).expect("json");
+    assert!(
+        amounts.contains("40") && amounts.contains("50"),
+        "{amounts}"
+    );
+}
+
+#[tokio::test]
+async fn a_local_workspace_with_every_document_kind_uploads_all_of_it_when_signing_up() {
+    let server = server!();
+    let local = Device::local().await;
+    let content = make_content(&local.core).await;
+    let want = complete_content(&local.core, &content).await;
+
+    local
+        .core
+        .sign_up(sign_up_args(&server.url, "local device"))
+        .await
+        .expect("sign up");
+    synced(&local.core).await;
+    assert_eq!(local.core.pending_updates(), 0);
+    let other = signed_in(&server.url, "second").await;
+    wait_for(
+        "the second device to receive the whole workspace",
+        || async { fingerprint(&other.core, &content).await.as_ref() == Some(&want) },
+    )
+    .await;
+
+    // Signing out turns the workspace local again with nothing left to send.
+    local.core.sign_out().await.expect("sign out");
+    assert_eq!(local.core.pending_updates(), 0);
+    assert_eq!(fingerprint(&local.core, &content).await, Some(want));
+}
+
+#[tokio::test]
+async fn after_compaction_a_new_device_bootstraps_every_document_kind_identically() {
+    let server = server!();
+    let a = signed_up(&server, "a").await;
+    let content = make_content(&a.core).await;
+    synced(&a.core).await;
+    let want = complete_content(&a.core, &content).await;
+
+    let taken = a.core.compact_server_log(1).await.expect("compact");
+    println!("compaction: {taken} snapshot(s) accepted");
+    let c = signed_in(&server.url, "c").await;
+    wait_for("c to bootstrap from the compacted log", || async {
+        fingerprint(&c.core, &content).await.as_ref() == Some(&want)
+    })
+    .await;
+
+    // The server took a snapshot of each of these documents: the local log
+    // is only folded after the server accepted one.
+    let dir = a.dir.clone();
+    a.core.shutdown().await;
+    let store = ne_store::Workspace::open(
+        dir.path().join("data").join("workspace"),
+        ne_store::StoreConfig::default(),
+    )
+    .expect("reopen");
+    let extra = store.synced_documents().expect("documents");
+    assert!(
+        extra.len() >= 4,
+        "database, template library, reminders, synced block: {extra:?}"
+    );
+    for doc in &extra {
+        assert_eq!(
+            store.update_log_size(doc).expect("size").0,
+            0,
+            "{doc:?} was not compacted"
+        );
+    }
+    assert!(
+        taken > extra.len(),
+        "the tree and pages were taken too: {taken}"
     );
 }

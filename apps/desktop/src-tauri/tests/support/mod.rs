@@ -8,15 +8,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use fakes::{FakeUpdates, RecordingNotifier};
 use ne_crypto::password::{KdfParams, KdfPolicy};
 use ne_store::Durability;
 use ne_sync::Backoff;
 use note_everywhere_desktop_lib::app::{
     AppConfig, AppCore, CapturingSink, Clipboard, Deps, Dialogs, EngineTuning, Hotkeys,
-    MemoryBackend, MemoryClipboard, SharedBackend,
+    MemoryBackend, MemoryClipboard, NotifyPermission, SharedBackend,
 };
 use tempfile::TempDir;
 
+pub mod fakes;
 pub mod proxy;
 
 pub const SERVER_ENV: &str = "NE_SYNC_TEST_URL";
@@ -93,7 +95,29 @@ pub struct Device {
     pub hotkeys: Arc<RecordingHotkeys>,
     pub secrets: Arc<MemoryBackend>,
     pub clock: Arc<ManualClock>,
+    pub notifier: Arc<RecordingNotifier>,
+    pub updates: Arc<FakeUpdates>,
     pub dir: Arc<TempDir>,
+}
+
+/// What a test may choose about the OS services of a device.
+#[derive(Clone, Copy)]
+pub struct Services {
+    pub notifications: NotifyPermission,
+    /// What the person answers when the app asks for notification permission.
+    pub notification_answer: NotifyPermission,
+    /// Whether this build carries an updater key.
+    pub updater_configured: bool,
+}
+
+impl Default for Services {
+    fn default() -> Self {
+        Self {
+            notifications: NotifyPermission::Granted,
+            notification_answer: NotifyPermission::Granted,
+            updater_configured: true,
+        }
+    }
 }
 
 pub fn test_config(dir: &TempDir, clock: Arc<ManualClock>) -> AppConfig {
@@ -125,6 +149,28 @@ impl Device {
     }
 
     pub async fn open_in(dir: Arc<TempDir>, secrets: Arc<MemoryBackend>) -> Self {
+        Self::open_with(dir, secrets, Services::default()).await
+    }
+
+    pub async fn with_services(services: Services) -> Self {
+        Self::open_with(
+            Arc::new(TempDir::new().expect("tempdir")),
+            Arc::new(MemoryBackend::default()),
+            services,
+        )
+        .await
+    }
+
+    pub async fn open_with(
+        dir: Arc<TempDir>,
+        secrets: Arc<MemoryBackend>,
+        services: Services,
+    ) -> Self {
+        let notifier = Arc::new(RecordingNotifier::new(
+            services.notifications,
+            services.notification_answer,
+        ));
+        let updates = Arc::new(FakeUpdates::new(services.updater_configured));
         let events = Arc::new(CapturingSink::default());
         let clipboard = Arc::new(MemoryClipboard::default());
         let dialogs = Arc::new(ScriptedDialogs::default());
@@ -135,6 +181,8 @@ impl Device {
             clipboard: clipboard.clone() as Arc<dyn Clipboard>,
             dialogs: dialogs.clone(),
             hotkeys: hotkeys.clone(),
+            notifier: notifier.clone(),
+            updater: updates.clone(),
             secrets: SharedBackend(secrets.clone()),
         };
         let core = AppCore::open(test_config(&dir, clock.clone()), deps)
@@ -148,6 +196,8 @@ impl Device {
             hotkeys,
             secrets,
             clock,
+            notifier,
+            updates,
             dir,
         }
     }

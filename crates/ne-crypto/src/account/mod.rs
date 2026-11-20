@@ -15,10 +15,10 @@ mod records;
 mod vault;
 
 pub use login::{
-    LoginAttempt, NewAccount, PasswordChange, begin_login, change_password, create_account,
-    unlock_with_password, unlock_with_recovery_key,
+    AccountRecovery, LoginAttempt, NewAccount, PasswordChange, begin_login, change_password,
+    create_account, recover_account, unlock_with_password, unlock_with_recovery_key,
 };
-pub use records::{AccountRecord, AccountSecrets, SALT_LEN, VaultRecord};
+pub use records::{AccountRecord, AccountSecrets, RecoveryRecord, SALT_LEN, VaultRecord};
 pub use vault::{
     NewVault, change_vault_password, create_vault, unlock_vault, unlock_vault_with_recovery_key,
 };

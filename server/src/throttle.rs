@@ -37,6 +37,18 @@ pub fn ip_key(ip: &str) -> String {
     format!("ip:{ip}")
 }
 
+/// Recovery attempts have their own buckets: someone who forgot the password
+/// has just failed several logins and must still be able to recover, and
+/// guessing at recovery must not lock the owner out of password logins.
+pub fn recovery_account_key(username: &str) -> String {
+    let digest = Sha256::digest(username.as_bytes());
+    format!("rcv:{}", hex_encode(&digest[..8]))
+}
+
+pub fn recovery_ip_key(ip: &str) -> String {
+    format!("rip:{ip}")
+}
+
 /// Seconds the caller must still wait, if any bucket is locked.
 pub fn remaining_lock(db: &Db, keys: &[String], now: u64) -> Result<Option<u64>> {
     let mut longest = 0;
@@ -105,6 +117,23 @@ mod tests {
         assert_eq!(lock_secs(7, 5, 30), 120);
         assert_eq!(lock_secs(40, 5, 30), 3600);
         assert_eq!(lock_secs(u32::MAX, 5, u64::MAX), 3600);
+    }
+
+    #[test]
+    fn recovery_buckets_are_separate_from_login_buckets() {
+        assert_ne!(account_key("alice"), recovery_account_key("alice"));
+        assert_ne!(ip_key("1.2.3.4"), recovery_ip_key("1.2.3.4"));
+        assert!(!recovery_account_key("alice").contains("alice"));
+    }
+
+    /// Recovery uses the login policy: free attempts, then doubling to an hour.
+    #[test]
+    fn recovery_lockout_follows_the_login_escalation() {
+        let (free, base) = (5, 30);
+        let schedule: Vec<u64> = (1..=9).map(|n| lock_secs(n, free, base)).collect();
+        assert_eq!(schedule, [0, 0, 0, 0, 30, 60, 120, 240, 480]);
+        assert_eq!(lock_secs(5 + 7, free, base), 3600);
+        assert_eq!(lock_secs(5 + 30, free, base), 3600);
     }
 
     #[test]

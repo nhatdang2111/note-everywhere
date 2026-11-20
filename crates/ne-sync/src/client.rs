@@ -7,15 +7,18 @@
 
 use std::sync::Arc;
 
-use ne_crypto::account::{self, AccountRecord, AccountSecrets, SALT_LEN, VaultRecord};
+use ne_crypto::account::{
+    self, AccountRecord, AccountSecrets, RecoveryRecord, SALT_LEN, VaultRecord,
+};
 use ne_crypto::key_wrap::WrappedKey;
 use ne_crypto::keys::SecretKey;
 use ne_crypto::password::{KdfParams, KdfPolicy};
-use ne_crypto::recovery::RecoveryKey;
+use ne_crypto::recovery::{RecoveryKey, RecoveryKind};
 use ne_sync_protocol::ids::{is_valid_label, normalize_username};
 use ne_sync_protocol::wire::{
-    ChangePasswordRequest, LoginRequest, RegisterRequest, SaltRequest, SaltResponse, SessionInfo,
-    SessionList, SessionResponse, WorkspaceKeyBody, b64_decode_array, b64_encode,
+    ChangePasswordRequest, LoginRequest, RecoverRequest, RecoveryLookupRequest,
+    RecoveryLookupResponse, RegisterRequest, SaltRequest, SaltResponse, SessionInfo, SessionList,
+    SessionResponse, WorkspaceKeyBody, b64_decode_array, b64_encode,
 };
 use reqwest::Method;
 use serde::Serialize;
@@ -148,6 +151,12 @@ impl SyncClient {
             username,
             device_label: self.cfg.device_label.clone(),
             auth_key: b64_encode(created.auth_key.as_bytes()),
+            recovery_auth_key: b64_encode(
+                created
+                    .recovery_key
+                    .auth_key(RecoveryKind::Account)
+                    .as_bytes(),
+            ),
             record: convert(&created.record)?,
         };
         let request = self
@@ -202,6 +211,64 @@ impl SyncClient {
             .map_err(|_| SyncError::InvalidCredentials)?;
         let session = self.adopt(&response)?;
         Ok(Unlocked { secrets, session })
+    }
+
+    /// Resets a forgotten password with the account recovery key and signs in.
+    ///
+    /// The server hands out the recovery-wrapped keys for the name (made-up
+    /// ones for an unknown name); the key is checked locally first, so a wrong
+    /// key or name fails as [`account::AccountError::WrongSecret`] without
+    /// anything secret leaving the device. Then the proof (an auth secret
+    /// derived separately from the wrapping key) and the new password material
+    /// go up in one request. The server ends every other session. The recovery
+    /// key itself stays valid: it is not rotated. An account created before
+    /// recovery verification existed answers with `Server { status: 409, code:
+    /// "recovery_unavailable" }`.
+    pub async fn recover_account(
+        &self,
+        username: &str,
+        recovery_key: &str,
+        new_password: &str,
+    ) -> Result<Unlocked> {
+        let username = normalize_username(username).ok_or_else(|| {
+            SyncError::Input("username must be 3 to 64 of a-z 0-9 . _ @ + -".into())
+        })?;
+        let key =
+            RecoveryKey::parse(recovery_key).map_err(|err| SyncError::Input(err.to_string()))?;
+        let lookup = self
+            .transport
+            .request(Method::POST, "/v1/account/recovery")?
+            .json(&RecoveryLookupRequest {
+                username: username.clone(),
+            });
+        let lookup: RecoveryLookupResponse = transport::json(lookup).await?;
+        let stored: RecoveryRecord = convert(&lookup)?;
+        let (params, policy, secret) = (
+            self.cfg.kdf_params,
+            self.cfg.kdf_policy,
+            new_password.to_owned(),
+        );
+        let recovered = blocking(move || {
+            account::recover_account(&key, &stored, secret.as_bytes(), params, &policy)
+        })
+        .await??;
+        let body = RecoverRequest {
+            username,
+            recovery_auth_key: b64_encode(recovered.recovery_auth_key.as_bytes()),
+            new_auth_key: b64_encode(recovered.auth_key.as_bytes()),
+            device_label: self.cfg.device_label.clone(),
+            record: convert(&recovered.record)?,
+        };
+        let request = self
+            .transport
+            .request(Method::POST, "/v1/account/recover")?
+            .json(&body);
+        let response: SessionResponse = transport::json(request).await?;
+        let session = self.adopt(&response)?;
+        Ok(Unlocked {
+            secrets: recovered.secrets,
+            session,
+        })
     }
 
     /// Ends this session on the server and forgets it locally. The local

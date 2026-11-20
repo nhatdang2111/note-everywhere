@@ -351,11 +351,11 @@ describe("find in page", () => {
 });
 
 describe("schema", () => {
-  it("keeps the 13 persisted node names of the page document", () => {
+  it("keeps the persisted node names of the page document: the 13 block kinds and the synced-block placeholder", () => {
     expect(Object.keys(pageSchema.nodes).sort()).toEqual(
       [
         "bullet_list", "callout", "child_page", "code_block", "divider", "doc", "hard_break", "heading", "image",
-        "list_item", "ordered_list", "page_link", "paragraph", "quote", "text", "todo_item", "todo_list", "toggle",
+        "list_item", "ordered_list", "page_link", "paragraph", "quote", "synced_block", "text", "todo_item", "todo_list", "toggle",
       ].sort(),
     );
   });

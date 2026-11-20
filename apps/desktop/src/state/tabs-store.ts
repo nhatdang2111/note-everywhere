@@ -37,6 +37,8 @@ export interface TabsStore {
   target: () => Target;
   /** The page shown in the active tab, or null. */
   activePageId: () => NodeId | null;
+  /** The database of the row shown in the active tab, if it is a row. */
+  activeDatabaseId: () => NodeId | null;
   open(target: Target, options?: { newTab?: boolean }): void;
   newTab(): void;
   activate(id: string): void;
@@ -47,7 +49,7 @@ export interface TabsStore {
   canBack: () => boolean;
   canForward: () => boolean;
   /** Forget pages that no longer exist so no tab or history entry points at them. */
-  prune(exists: (pageId: NodeId) => boolean): void;
+  prune(exists: (pageId: NodeId, databaseId?: NodeId) => boolean): void;
 }
 
 export function createTabsStore(): TabsStore {
@@ -64,6 +66,10 @@ export function createTabsStore(): TabsStore {
     activePageId() {
       const target = currentTarget(activeTab(state()));
       return target.kind === "page" ? target.pageId : null;
+    },
+    activeDatabaseId() {
+      const target = currentTarget(activeTab(state()));
+      return target.kind === "page" ? (target.databaseId ?? null) : null;
     },
     open: (target, options) => update(openTarget(state(), target, options?.newTab)),
     newTab: () => update(openNewEmptyTab(state(), HOME)),

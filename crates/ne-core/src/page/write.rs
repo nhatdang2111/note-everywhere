@@ -61,6 +61,7 @@ fn attribute_pairs(kind: &BlockKind) -> Vec<(&'static str, LoroValue)> {
             ("pageId", LoroValue::from(page_id.as_str())),
             ("title", LoroValue::from(title.as_str())),
         ],
+        BlockKind::SyncedBlock { sync_id } => vec![("syncId", LoroValue::from(sync_id.as_str()))],
         _ => Vec::new(),
     }
 }
@@ -229,7 +230,7 @@ impl PageDoc {
         let parent_kind = self.parent_kind(parent)?;
         check_insert(parent_kind.as_ref(), &existing, index, block)?;
         let result = write_block(&list, Some(index), block);
-        self.doc.commit();
+        self.commit();
         result
     }
 
@@ -255,7 +256,7 @@ impl PageDoc {
         let result = blocks
             .iter()
             .try_for_each(|block| write_block(&list, None, block));
-        self.doc.commit();
+        self.commit();
         result.map(|()| first)
     }
 
@@ -271,7 +272,7 @@ impl PageDoc {
         let existing = Self::child_kinds(&list)?;
         check_remove(self.parent_kind(parent)?.as_ref(), &existing, index)?;
         let result = list.delete(index, 1).map_err(Error::from);
-        self.doc.commit();
+        self.commit();
         result
     }
 
@@ -296,7 +297,7 @@ impl PageDoc {
                     inline,
                 )
             });
-        self.doc.commit();
+        self.commit();
         result
     }
 
@@ -318,7 +319,7 @@ impl PageDoc {
         }
         let children = children_list(&node)?;
         let result = insert_text_at(&children, offset, text);
-        self.doc.commit();
+        self.commit();
         result
     }
 
@@ -345,7 +346,7 @@ impl PageDoc {
         let result = attribute_pairs(kind)
             .into_iter()
             .try_for_each(|(key, value)| attributes.insert(key, value).map_err(Error::from));
-        self.doc.commit();
+        self.commit();
         result
     }
 

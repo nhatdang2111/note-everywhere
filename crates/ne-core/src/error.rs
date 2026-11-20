@@ -43,6 +43,16 @@ pub enum Error {
         /// Maximum allowed.
         max: usize,
     },
+    /// A database holds only pages; this parent cannot take the node.
+    #[error("{0} is a database and holds only pages")]
+    InvalidParent(NodeId),
+    /// An input is not acceptable (a bad name, value, filter or request).
+    #[error("invalid input: {0}")]
+    Invalid(String),
+    /// Something a request names does not exist (a property, option, view,
+    /// template, reminder, version, ...).
+    #[error("not found: {0}")]
+    Missing(String),
     /// The tree structure is inconsistent (a parent cycle was detected).
     #[error("workspace tree is corrupt near node {0}")]
     Corrupt(NodeId),

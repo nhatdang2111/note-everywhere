@@ -25,6 +25,8 @@ export interface TreeStore extends TreeMethods {
   livePages(): TreeNode[];
   isLive(id: NodeId): boolean;
   touch(id: NodeId): void;
+  /** Live children in display order (the rows of a database, for instance). */
+  liveChildren(parent: NodeId): TreeNode[];
 }
 
 export interface TreeHooks {
@@ -75,8 +77,7 @@ export function createTreeStore(hooks: TreeHooks): TreeStore {
 
   function insertAt(parent: NodeId | null, id: NodeId, index: number | undefined): void {
     const list = siblings(parent);
-    const live = list.filter(isLive);
-    const anchor = index === undefined ? undefined : live[index];
+    const anchor = index === undefined ? undefined : list.filter(isLive)[index];
     const at = anchor === undefined ? list.length : list.indexOf(anchor);
     list.splice(at, 0, id);
   }
@@ -92,8 +93,11 @@ export function createTreeStore(hooks: TreeHooks): TreeStore {
     if (node) node.updatedAt = Date.now();
   };
 
-  const requireParent = (parentId: NodeId | null) => {
+  const requireParent = (parentId: NodeId | null, kind?: TreeNode["kind"]) => {
     if (parentId !== null && !isLive(parentId)) throw apiError("not_found", "The destination no longer exists.");
+    if (parentId !== null && nodes.get(parentId)?.kind === "database" && kind !== undefined && kind !== "page") {
+      throw apiError("invalid_input", "Only pages can be rows of a database.");
+    }
   };
 
   const flatten = (parent: NodeId | null, out: TreeNode[]): TreeNode[] => {
@@ -101,7 +105,8 @@ export function createTreeStore(hooks: TreeHooks): TreeStore {
       const node = nodes.get(id);
       if (node && isLive(id)) {
         out.push({ ...node });
-        flatten(id, out);
+        // Rows of a database are read with dbQuery, not listed in the tree.
+        if (node.kind !== "database") flatten(id, out);
       }
     }
     return out;
@@ -134,6 +139,7 @@ export function createTreeStore(hooks: TreeHooks): TreeStore {
     get: (id) => nodes.get(id),
     isLive,
     touch,
+    liveChildren: (parent) => siblings(parent).flatMap((id) => (isLive(id) && nodes.get(id) ? [nodes.get(id) as TreeNode] : [])),
     livePages: () => [...nodes.values()].filter((node) => node.kind === "page" && isLive(node.id)),
     breadcrumb(id) {
       const titles: string[] = [];
@@ -146,7 +152,7 @@ export function createTreeStore(hooks: TreeHooks): TreeStore {
     treeSnapshot: async () => flatten(null, []),
 
     async treeCreate({ kind, parentId, index, title }) {
-      requireParent(parentId);
+      requireParent(parentId, kind);
       const now = Date.now();
       const node: TreeNode = {
         id: randomId(kind),
@@ -181,7 +187,7 @@ export function createTreeStore(hooks: TreeHooks): TreeStore {
 
     async treeMove({ id, parentId, index }) {
       const node = need(id);
-      requireParent(parentId);
+      requireParent(parentId, node.kind);
       if (parentId === id || (parentId !== null && isDescendantOf(parentId, id))) {
         throw apiError("cycle", "A page or folder cannot be moved into itself.");
       }

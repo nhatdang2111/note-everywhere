@@ -25,7 +25,10 @@ pub enum Durability {
 
 /// Migrations in order; entry `i` upgrades the schema from version `i` to
 /// `i + 1`. Never edit an entry that has shipped, add a new one.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_databases.sql"),
+];
 
 /// The schema version this build writes.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

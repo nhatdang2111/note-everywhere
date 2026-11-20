@@ -50,6 +50,14 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The transcription feature (whisper.cpp) is only shipped for macOS, so it
+      # is only linted there. cmake is preinstalled on the runner image; the
+      # guard keeps the step working if that ever changes.
+      - name: Clippy with offline transcription
+        if: runner.os == 'macOS'
+        run: |
+          command -v cmake >/dev/null || brew install cmake
+          cargo clippy -p note-everywhere-desktop --all-targets --features transcribe -- -D warnings
       - name: Test
         run: cargo test --workspace
 

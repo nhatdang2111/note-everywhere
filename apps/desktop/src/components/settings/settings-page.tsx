@@ -6,6 +6,7 @@ import { Button } from "../common/button.tsx";
 import { Select } from "../common/form.tsx";
 import { VoiceSettings } from "../voice/voice-settings.tsx";
 import { AccountSection } from "./account-section.tsx";
+import { UpdatesSection } from "./updates-section.tsx";
 
 const IDLE_OPTIONS = [60, 300, 900, 1800, 3600];
 
@@ -51,6 +52,8 @@ export function SettingsPage(): JSX.Element {
       </section>
 
       <VoiceSettings />
+
+      <UpdatesSection />
 
       <section class="settings-section" aria-labelledby="data-title">
         <h2 id="data-title">{t("settings.data")}</h2>

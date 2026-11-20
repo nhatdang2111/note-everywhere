@@ -24,11 +24,32 @@ pub struct AccountRecord {
     /// `auth::auth_verifier` of the password-derived auth key.
     #[serde(with = "serde_b64")]
     pub auth_verifier: [u8; auth::LEN],
+    /// `auth::auth_verifier` of the recovery-derived auth key, which lets the
+    /// server accept a password reset from someone who holds the recovery key.
+    /// All zeros for an account created before recovery verification existed:
+    /// such an account cannot be recovered through the server.
+    #[serde(with = "serde_b64", default)]
+    pub recovery_verifier: [u8; auth::LEN],
     /// Root key wrapped by the password-derived key.
     pub root_key_by_password: WrappedKey,
     /// Root key wrapped by the account recovery key.
     pub root_key_by_recovery: WrappedKey,
     /// Workspace key wrapped by the root key.
+    pub workspace_key: WrappedKey,
+}
+
+impl AccountRecord {
+    /// Whether the server can verify a recovery attempt for this account.
+    pub fn supports_recovery(&self) -> bool {
+        self.recovery_verifier != [0u8; auth::LEN]
+    }
+}
+
+/// The part of an [`AccountRecord`] a client needs to recover a forgotten
+/// password: the wrapped keys the recovery key opens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryRecord {
+    pub root_key_by_recovery: WrappedKey,
     pub workspace_key: WrappedKey,
 }
 

@@ -3,6 +3,7 @@
 use std::fmt;
 
 use ne_core::NodeId;
+use ne_core::roles::Role;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
@@ -197,6 +198,40 @@ pub(crate) fn compact(
         params![id, snapshot, version, now],
     )?;
     Ok(())
+}
+
+/// Records what a stored document is besides a plain page.
+pub(crate) fn set_role(conn: &Connection, id: &str, role: Role) -> Result<()> {
+    conn.execute(
+        "UPDATE docs SET role = ?2 WHERE id = ?1",
+        params![id, role.as_str()],
+    )?;
+    Ok(())
+}
+
+/// The role of a stored document; `None` for a plain page or no document.
+pub(crate) fn role(conn: &Connection, id: &str) -> Result<Option<Role>> {
+    let text: Option<String> = conn
+        .query_row("SELECT role FROM docs WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(text.as_deref().and_then(Role::parse))
+}
+
+/// Ids of the stored documents that have a role.
+pub(crate) fn ids_with_roles(conn: &Connection) -> Result<Vec<(String, Role)>> {
+    let mut statement =
+        conn.prepare_cached("SELECT id, role FROM docs WHERE role != 'page' ORDER BY id")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, role)| Some((id, Role::parse(&role)?)))
+        .collect())
 }
 
 pub(crate) fn delete(conn: &Connection, id: &str) -> Result<()> {

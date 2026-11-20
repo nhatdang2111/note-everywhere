@@ -258,6 +258,10 @@ pub(crate) fn body_norm_of(conn: &Connection, rid: i64) -> Result<Option<String>
 // Queries
 // ---------------------------------------------------------------------------
 
+/// The text shown in a snippet: the page body, then, for a database row, its
+/// property text.
+const BODY: &str = "(COALESCE(p.body, '') || COALESCE(char(10) || r.search_raw, ''))";
+
 struct Candidate {
     id: String,
     kind: String,
@@ -290,16 +294,18 @@ fn indexed_candidates(
     let filters: String = (0..short.len())
         .map(|i| {
             format!(
-                " AND instr(n.title_norm || ' ' || COALESCE(p.body_norm, ''), ?{}) > 0",
+                " AND instr(n.title_norm || ' ' || COALESCE(p.body_norm, '') || ' ' \
+                  || COALESCE(r.search_norm, ''), ?{}) > 0",
                 i + 4
             )
         })
         .collect();
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT n.id, n.kind, n.title, n.icon, p.body, -bm25(search, ?3, 1.0)
+        "SELECT n.id, n.kind, n.title, n.icon, {BODY}, -bm25(search, ?3, 1.0)
          FROM search
          JOIN nodes n ON n.rid = search.rowid
          LEFT JOIN page_text p ON p.rid = n.rid
+         LEFT JOIN db_rows r ON r.row_id = n.id AND r.db_id = n.parent_id
          WHERE search MATCH ?1 AND n.hidden = 0{filters}
          ORDER BY bm25(search, ?3, 1.0)
          LIMIT ?2"
@@ -325,8 +331,9 @@ fn title_candidates(conn: &Connection, terms: &[String], limit: usize) -> Result
         .map(|i| format!(" AND instr(n.title_norm, ?{}) > 0", i + 2))
         .collect();
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT n.id, n.kind, n.title, n.icon, p.body, 0.0
+        "SELECT n.id, n.kind, n.title, n.icon, {BODY}, 0.0
          FROM nodes n LEFT JOIN page_text p ON p.rid = n.rid
+         LEFT JOIN db_rows r ON r.row_id = n.id AND r.db_id = n.parent_id
          WHERE n.hidden = 0{filters}
          ORDER BY instr(n.title_norm, ?2), length(n.title_norm), n.id
          LIMIT ?1"
@@ -361,11 +368,7 @@ pub(crate) fn run(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Se
         let Ok(id) = c.id.parse::<NodeId>() else {
             continue;
         };
-        let kind = if c.kind == "page" {
-            NodeKind::Page
-        } else {
-            NodeKind::Folder
-        };
+        let kind = NodeKind::parse(&c.kind).unwrap_or(NodeKind::Folder);
         let title_folded = fold_with_spans(&c.title);
         let snippet = snippet_of(&c.body, &fold_with_spans(&c.body), &terms);
         hits.push(SearchHit {

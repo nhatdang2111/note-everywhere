@@ -60,7 +60,7 @@ All commands run inside the `server/` directory. Commands that delete data are m
    # {"status":"ok"}
    ```
 
-6. **Create your account in the app.** Enter the Worker address, a username, a password and the setup code. The app shows your **recovery key** once: save it. The server cannot reset a password, and losing both the password and the recovery key loses your data for good.
+6. **Create your account in the app.** Enter the Worker address, a username, a password and the setup code. The app shows your **recovery key** once: save it. The server cannot reset a password by itself; the recovery key is what lets you set a new one from any device (the app's "forgot password" flow), which also signs every other device out. Losing both the password and the recovery key loses your data for good. A recovery does not replace the recovery key, so keep it as safe as the password.
 
    After the first account exists, registration is closed for good, whatever the setup code is.
 
@@ -84,7 +84,8 @@ Set these under `[env.production.vars]` in `wrangler.toml` (plain values, not se
 | `BLOB_QUOTA_BYTES` | 8589934592 (8 GiB) | Total attachment bytes the server accepts. R2's free allowance is 10 GB. |
 | `SESSION_TTL_DAYS` | 30 | How long a sign-in lasts. |
 | `LOCKOUT_FREE_ATTEMPTS` | 5 | Wrong passwords tolerated before a lockout starts. |
-| `LOCKOUT_BASE_SECONDS` | 30 | First lockout length; it doubles with each further failure, up to an hour. |
+| `LOCKOUT_BASE_SECONDS` | 30 | First lockout length; it doubles with each further failure, up to an hour. Applies to password logins and, in buckets of their own, to recovery-key attempts. |
+| `SESSION_TOUCH_SECONDS` | 600 | How often a session's "last seen" time is written at most. It is only written on requests that write anyway (pushes, part uploads) or when a connection opens, so it costs at most one row write per session per interval. |
 
 ### Free-plan limits this design respects
 
@@ -107,7 +108,7 @@ Your devices are the primary backup: every device keeps a full local copy, and t
 - **Attachments** live in the R2 bucket. Copy one object with
   `npx wrangler@latest r2 object get note-everywhere-blobs/blobs/<sha256> --remote --file ./copy.bin`
   (the key is the SHA-256 the app stores next to the attachment). Wrangler cannot list a bucket; to copy everything use the dashboard or an S3-compatible tool such as `rclone` with an R2 API token you create for the purpose, and keep that token out of this repository.
-- **The database** (account, sessions, log) has no export command: Durable Object SQLite storage is only reachable from the Worker. Cloudflare keeps point-in-time recovery for SQLite-backed objects for 30 days, as an API available to Worker code; this server does not expose it. If the database is lost you re-create the account from a device that still has the data, which needs app support for re-uploading (not part of the first release).
+- **The database** (account, sessions, log) has no export command: Durable Object SQLite storage is only reachable from the Worker. Cloudflare keeps point-in-time recovery for SQLite-backed objects for 30 days, as an API available to Worker code; this server does not expose it. If the database is lost, deploy a fresh server and, from a device that still has the data, sign out (local data is kept) and sign in again (or register) on the new server: the app queues its whole local workspace for re-upload from scratch. Any other device must also sign out and back in to the new server, or it stops with a "server was reset" status (see "Wipe" below and `docs/deployment-guide.md`, section 6).
 
 Back up the **recovery key** and the password separately from the server. They are the only way back in.
 
@@ -157,16 +158,19 @@ npx wrangler@latest dev --env dev --port 8787 --ip 127.0.0.1 \
   --var TEST_INSPECT:1 \
   --var LOCKOUT_BASE_SECONDS:2 \
   --var BLOB_MAX_BYTES:1048576 \
-  --var BLOB_QUOTA_BYTES:3145728
+  --var BLOB_QUOTA_BYTES:3145728 \
+  --var SESSION_TOUCH_SECONDS:2
 ```
 
 Then, from the repository root, in another terminal:
 
 ```sh
-NE_SYNC_TEST_URL=http://127.0.0.1:8787 cargo test -p ne-sync
+NE_SYNC_TEST_URL=http://127.0.0.1:8787 NE_SYNC_TEST_TOUCH_SECONDS=2 cargo test -p ne-sync
 ```
 
-Without `NE_SYNC_TEST_URL` the integration tests skip themselves and the rest of the suite still runs, so CI needs no server. The suite covers the account lifecycle, lockout, closed registration, session revocation, convergence after offline edits, duplicate and out-of-order pushes, dropped connections mid-push, snapshot compaction with a fresh device, attachments including a tampered download, hibernation, and a check that the server stores no known plaintext marker, password or key.
+`NE_SYNC_TEST_TOUCH_SECONDS` must equal the server's `SESSION_TOUCH_SECONDS`; without it the one test that checks session activity skips itself. For the request-budget numbers leave `SESSION_TOUCH_SECONDS` out so the production default (600) applies.
+
+Without `NE_SYNC_TEST_URL` the integration tests skip themselves and the rest of the suite still runs, so CI needs no server. The suite covers the account lifecycle, lockout, closed registration, session revocation, convergence after offline edits, duplicate and out-of-order pushes, dropped connections mid-push, snapshot compaction with a fresh device, attachments including a tampered download, hibernation, recovering a forgotten password with the recovery key (second device, lockout, unknown names, accounts without a verifier), updates and snapshots of 5 and 30 MiB that travel in staged parts and survive dropped connections, session activity, and a check that the server stores no known plaintext marker, password or key. The 30 MiB case needs no special settings: those objects go through the parts endpoint, not through R2.
 
 Other helpers:
 
@@ -191,4 +195,5 @@ Stop the local server with Ctrl-C when you are done.
 - `Error 1010` or a 403 from the app: the User-Agent must start with `NoteEverywhere/`. The app does this; a custom client must too.
 - `Source phase imports are not available` while bundling: you are using an old Wrangler. Use `npx wrangler@latest`.
 - "Registration is closed": an account already exists. Sign in instead.
-- A device shows a "session ended" status: it was signed out from another device or the password was changed. Sign in again.
+- A device shows a "session ended" status: it was signed out from another device, or the password was changed or reset with the recovery key. Sign in again.
+- "Recovery is not available for this account": the account was created before the server could verify recovery keys. Sign in with the password, or create a new account on a fresh server.

@@ -7,7 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use note_everywhere_desktop_lib::app::CoreEvent;
-use note_everywhere_desktop_lib::app::types::{SessionState, SessionStatus, SyncState, SyncStatus};
+use note_everywhere_desktop_lib::app::types::{
+    AddedAttachment, SessionState, SessionStatus, SyncState, SyncStatus, VoiceText,
+};
+use note_everywhere_desktop_lib::app::update::{UpdateState, UpdateStatus};
 
 fn manifest(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
@@ -216,6 +219,27 @@ fn sample_events() -> Vec<CoreEvent> {
             total_bytes: 0,
         },
         CoreEvent::VoiceHotkey { pressed: true },
+        CoreEvent::DatabaseChanged {
+            database_id: String::new(),
+            row_ids: vec![],
+        },
+        CoreEvent::RemindersChanged,
+        CoreEvent::ReminderDue {
+            reminders: vec![],
+            native_shown: false,
+        },
+        CoreEvent::UpdateStatus(UpdateStatus {
+            state: UpdateState::Idle,
+            current_version: String::new(),
+            version: None,
+            notes: None,
+            last_checked_at: None,
+            message: None,
+        }),
+        CoreEvent::UpdateProgress {
+            received_bytes: 0,
+            total_bytes: None,
+        },
     ]
 }
 
@@ -230,7 +254,7 @@ fn every_event_name_is_emitted_from_somewhere() {
             Some(quoted.split_once('"')?.0.to_owned())
         })
         .collect();
-    assert_eq!(names.len(), 7, "{names:?}");
+    assert_eq!(names.len(), 12, "{names:?}");
     let samples = sample_events();
     let ours: BTreeSet<String> = samples.iter().map(|e| e.name().to_owned()).collect();
     assert_eq!(names, ours, "event names differ from the contract");
@@ -257,6 +281,27 @@ fn every_event_name_is_emitted_from_somewhere() {
             event.name()
         );
     }
+}
+
+#[test]
+fn the_events_of_databases_and_reminders_have_the_documented_payloads() {
+    assert_eq!(
+        CoreEvent::DatabaseChanged {
+            database_id: "1@2".into(),
+            row_ids: vec!["3@4".into()],
+        }
+        .payload(),
+        serde_json::json!({ "databaseId": "1@2", "rowIds": ["3@4"] })
+    );
+    assert_eq!(CoreEvent::RemindersChanged.payload(), serde_json::json!({}));
+    assert_eq!(
+        CoreEvent::ReminderDue {
+            reminders: vec![],
+            native_shown: true,
+        }
+        .payload(),
+        serde_json::json!({ "reminders": [], "nativeShown": true })
+    );
 }
 
 #[test]
@@ -290,5 +335,127 @@ fn event_payloads_are_camel_case_json() {
     assert_eq!(
         session,
         serde_json::json!({ "state": "needs_sign_in", "username": "a" })
+    );
+}
+
+#[test]
+fn voice_stop_returns_the_kept_recording_as_the_contract_says() {
+    let contract = read("../src/api/contract.ts");
+    assert!(
+        contract.contains("voiceStop(): Promise<{ text: string; audio?: AddedAttachment }>;"),
+        "the contract's voiceStop result changed; update the shell to match"
+    );
+    let kept = VoiceText {
+        text: "hello".into(),
+        audio: Some(AddedAttachment {
+            hash: "ab".repeat(32),
+            mime: "audio/wav".into(),
+            byte_length: 44,
+            url: "ne-attachment://localhost/ab".into(),
+        }),
+    };
+    assert_eq!(
+        serde_json::to_value(&kept).expect("json"),
+        serde_json::json!({
+            "text": "hello",
+            "audio": {
+                "hash": "ab".repeat(32),
+                "mime": "audio/wav",
+                "byteLength": 44,
+                "url": "ne-attachment://localhost/ab",
+            }
+        })
+    );
+    // Without a kept recording the key is absent, not null.
+    let plain = VoiceText {
+        text: "hello".into(),
+        audio: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&plain).expect("json"),
+        serde_json::json!({ "text": "hello" })
+    );
+}
+
+#[test]
+fn the_update_events_have_the_documented_payloads() {
+    let status = UpdateStatus {
+        state: UpdateState::Available,
+        current_version: "0.1.0".into(),
+        version: Some("0.2.0".into()),
+        notes: None,
+        last_checked_at: Some(5),
+        message: None,
+    };
+    assert_eq!(
+        CoreEvent::UpdateStatus(status).payload(),
+        serde_json::json!({
+            "state": "available",
+            "currentVersion": "0.1.0",
+            "version": "0.2.0",
+            "lastCheckedAt": 5,
+            "message": null,
+        })
+    );
+    assert_eq!(
+        CoreEvent::UpdateProgress {
+            received_bytes: 10,
+            total_bytes: None,
+        }
+        .payload(),
+        serde_json::json!({ "receivedBytes": 10, "totalBytes": null })
+    );
+    // Every state the contract lists serialises under that name.
+    let source = read("../src/api/contract.ts");
+    let states = interface_body(&source, "UpdateStatus");
+    assert!(states.contains("state: UpdateState;"));
+    for (state, name) in [
+        (UpdateState::Unavailable, "unavailable"),
+        (UpdateState::Idle, "idle"),
+        (UpdateState::Checking, "checking"),
+        (UpdateState::UpToDate, "up_to_date"),
+        (UpdateState::Available, "available"),
+        (UpdateState::Downloading, "downloading"),
+        (UpdateState::Ready, "ready"),
+        (UpdateState::Error, "error"),
+    ] {
+        assert_eq!(serde_json::to_value(state).expect("json"), name);
+        assert!(
+            source.contains(&format!("| \"{name}\"")),
+            "the contract does not list the state {name}"
+        );
+    }
+}
+
+/// The webview may only listen to events: everything else (dialogs, clipboard,
+/// the shortcut, notifications, the updater) is driven from Rust, so no plugin
+/// permission may be granted, and the UI must not import a plugin API.
+#[test]
+fn the_capability_grants_only_what_the_ui_uses() {
+    let capability: serde_json::Value =
+        serde_json::from_str(&read("capabilities/default.json")).expect("capability json");
+    assert_eq!(
+        capability["permissions"],
+        serde_json::json!(["core:event:default"])
+    );
+    let mut imports = Vec::new();
+    let mut stack = vec![manifest("../src")];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(dir).expect("dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "ts" || e == "tsx")
+                && fs::read_to_string(&path)
+                    .expect("source")
+                    .contains("@tauri-apps/plugin-")
+            {
+                imports.push(path);
+            }
+        }
+    }
+    assert!(
+        imports.is_empty(),
+        "the UI imports a plugin API, which needs a capability: {imports:?}"
     );
 }

@@ -3,8 +3,11 @@ import type { IconName } from "../common/icons.tsx";
 import { fold } from "../../lib/text.ts";
 import type { MessageKey } from "../../i18n/index.ts";
 
+/** Slash entries that are not block kinds: they make or find something first. */
+export type SlashAction = BlockChoice | "database" | "synced_existing";
+
 export interface SlashItem {
-  id: BlockChoice;
+  id: SlashAction;
   icon: IconName;
   label: MessageKey;
   hint: MessageKey;
@@ -29,6 +32,8 @@ export const SLASH_ITEMS: readonly SlashItem[] = [
   { id: "image", icon: "image", label: "block.image", hint: "block.imageHint", keywords: "image picture photo upload anh hinh" },
   { id: "child_page", icon: "page", label: "block.childPage", hint: "block.childPageHint", keywords: "page subpage child new trang con" },
   { id: "page_link", icon: "page-link", label: "block.pageLink", hint: "block.pageLinkHint", keywords: "link page mention reference lien ket trang" },
+  { id: "database", icon: "database", label: "block.database", hint: "block.databaseHint", keywords: "database table board calendar list csdl bang co so du lieu" },
+  { id: "synced_existing", icon: "sync", label: "block.syncedExisting", hint: "block.syncedExistingHint", keywords: "synced shared sync block dong bo chia se" },
 ];
 
 /**

@@ -62,6 +62,12 @@ pub enum SyncError {
 pub type Result<T> = std::result::Result<T, SyncError>;
 
 impl SyncError {
+    /// The account was created before recovery verification existed, so the
+    /// server cannot check a recovery key for it.
+    pub fn is_recovery_unavailable(&self) -> bool {
+        matches!(self, Self::Server { status: 409, code } if code == "recovery_unavailable")
+    }
+
     /// Whether the same request may succeed later without any change.
     pub fn is_retryable(&self) -> bool {
         matches!(self, Self::Network(_) | Self::Unavailable | Self::Offline)

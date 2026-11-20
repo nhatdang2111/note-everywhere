@@ -2,10 +2,18 @@
 //!
 //! All behaviour lives in [`app`], which knows nothing about Tauri; this file
 //! registers the commands, the attachment URI scheme and the plugins.
+//!
+//! Plugins and what they are for: dialog (folder and file pickers),
+//! clipboard-manager, global-shortcut (hold-to-talk), single-instance,
+//! notification (due reminders) and updater (only when the build carries an
+//! updater public key, see [`updater`]). All of them are driven from Rust, so
+//! the webview's capability grants none of their permissions.
 
 pub mod app;
 mod commands;
 mod shell;
+#[cfg(desktop)]
+pub mod updater;
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -17,7 +25,10 @@ use app::{AppConfig, AppCore, Deps, EventSink, SharedBackend};
 use ne_platform::dirs::AppDirs;
 use ne_platform::secure_store::KeyringBackend;
 
-fn build_core(app: &tauri::AppHandle) -> Result<AppCore, Box<dyn std::error::Error>> {
+fn build_core(
+    app: &tauri::AppHandle,
+    updater_configured: bool,
+) -> Result<AppCore, Box<dyn std::error::Error>> {
     let dirs = AppDirs::discover()?;
     let events: Arc<dyn EventSink> = Arc::new(shell::TauriEvents(app.clone()));
     let deps = Deps {
@@ -28,10 +39,14 @@ fn build_core(app: &tauri::AppHandle) -> Result<AppCore, Box<dyn std::error::Err
             app: app.clone(),
             events,
         }),
+        notifier: Arc::new(shell::TauriNotifier(app.clone())),
+        updater: shell::updater_backend(app, updater_configured),
         secrets: SharedBackend(Arc::new(KeyringBackend)),
     };
     let core = tauri::async_runtime::block_on(AppCore::open(AppConfig::for_dirs(&dirs), deps))?;
     core.start_background();
+    core.start_reminder_scheduler();
+    core.start_update_check();
     Ok(core)
 }
 
@@ -49,9 +64,19 @@ pub fn run() {
             }
         }));
     }
+    let context = tauri::generate_context!();
+    #[cfg_attr(not(desktop), allow(unused_variables))]
+    let updater_configured = updater::updater_configured(context.config());
     builder = builder
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_clipboard_manager::init());
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init());
+    // The plugin refuses to start without a public key in its configuration,
+    // so a build without one leaves it out and reports updates as unavailable.
+    #[cfg(desktop)]
+    if updater_configured {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
@@ -83,13 +108,13 @@ pub fn run() {
                 });
             },
         )
-        .setup(|app| {
-            let core = build_core(app.handle())?;
+        .setup(move |app| {
+            let core = build_core(app.handle(), updater_configured)?;
             app.manage(core);
             Ok(())
         })
         .invoke_handler(command_handler())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::ExitRequested { .. } = event
@@ -160,6 +185,58 @@ pub fn command_handler<R: tauri::Runtime>()
         commands::voice_stop,
         commands::voice_cancel,
         commands::settings_get,
-        commands::settings_set
+        commands::settings_set,
+        commands::db_create,
+        commands::db_schema,
+        commands::db_query,
+        commands::db_property_add,
+        commands::db_property_rename,
+        commands::db_property_delete,
+        commands::db_property_move,
+        commands::db_property_change_type,
+        commands::db_relation_add,
+        commands::db_option_add,
+        commands::db_option_rename,
+        commands::db_option_color,
+        commands::db_option_delete,
+        commands::db_option_move,
+        commands::db_row_create,
+        commands::db_cell_set,
+        commands::db_card_move,
+        commands::db_view_add,
+        commands::db_view_save,
+        commands::db_view_delete,
+        commands::db_view_move,
+        commands::template_list,
+        commands::template_create_from_page,
+        commands::template_create_for_database,
+        commands::template_rename,
+        commands::template_set_defaults,
+        commands::template_delete,
+        commands::template_instantiate_page,
+        commands::template_instantiate_row,
+        commands::page_history,
+        commands::page_version_preview,
+        commands::page_version_restore,
+        commands::import_structured,
+        commands::synced_create,
+        commands::synced_insert,
+        commands::synced_open,
+        commands::synced_apply_update,
+        commands::synced_close,
+        commands::synced_unsync,
+        commands::synced_occurrences,
+        commands::synced_list,
+        commands::reminder_add,
+        commands::reminder_list,
+        commands::reminder_set_done,
+        commands::reminder_snooze,
+        commands::reminder_reschedule,
+        commands::reminder_set_note,
+        commands::reminder_delete,
+        commands::update_status,
+        commands::update_check,
+        commands::update_download,
+        commands::update_install
     ]
 }

@@ -22,3 +22,14 @@ pub const MAX_JSON_BODY: usize = 64 * 1024;
 pub const MAX_BLOB_CEILING: u64 = 90 * 1024 * 1024;
 /// Default attachment object cap.
 pub const DEFAULT_BLOB_MAX: u64 = 64 * 1024 * 1024;
+/// Largest sealed part of a large object. Parts live in rows of the Durable
+/// Object (limit 2 MB per row) and travel as one HTTP body each.
+pub const MAX_PART_PAYLOAD: usize = 1024 * 1024;
+/// Most parts in one large object, so a large object is at most 64 MiB sealed.
+pub const MAX_PARTS: usize = 64;
+/// Plaintext bytes carried by one part. The part's seal adds a header and the
+/// envelope, which together stay far below the gap to [`MAX_PART_PAYLOAD`].
+pub const PART_CHUNK: usize = MAX_PART_PAYLOAD - 1024;
+/// Largest update or snapshot state (plaintext) the client accepts. Fits
+/// `MAX_PARTS` parts with room for the headers.
+pub const MAX_LARGE_PLAINTEXT: usize = 48 * 1024 * 1024;

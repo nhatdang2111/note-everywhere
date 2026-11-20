@@ -1,7 +1,7 @@
 //! Tree operations of the [`Workspace`]: each one edits the live tree and
 //! persists the change, the derived indexes and the outbox in one transaction.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ne_core::NodeId;
 use ne_core::page::PageDoc;
@@ -9,6 +9,7 @@ use ne_core::tree::{Position, WorkspaceTree};
 use rusqlite::Connection;
 
 use crate::cache::PageCache;
+use crate::db_index;
 use crate::docs::{self, DocKind, DocRef, TREE_DOC_ID};
 use crate::error::Result;
 use crate::nodes;
@@ -19,6 +20,9 @@ use crate::workspace::{Change, StoreConfig, Workspace, load_page, load_tree};
 /// What applying tree changes to the indexes found.
 pub(crate) struct TreeOutcome {
     pub removed: BTreeSet<NodeId>,
+    /// Rows that were deleted, by the database whose cells still hold values
+    /// for them.
+    pub purged: BTreeMap<String, Vec<String>>,
 }
 
 /// Updates the node index, the search index and the page documents after the
@@ -31,19 +35,23 @@ pub(crate) fn apply_tree_changes(
     peer_id: u64,
     changed: &BTreeSet<NodeId>,
     explicit_removed: &[NodeId],
+    now: i64,
 ) -> Result<TreeOutcome> {
     let outcome = nodes::sync(conn, tree, changed)?;
     let mut removed: BTreeSet<NodeId> = BTreeSet::new();
+    let mut purged: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for &(id, rid) in &outcome.removed {
-        pages::remove_page(conn, id, Some(rid))?;
-        docs::delete(conn, &id.to_string())?;
+        note_purged(conn, id, &mut purged)?;
+        pages::remove_page(conn, id, Some(rid), now)?;
+        drop_document(conn, id)?;
         cache.remove(id);
         removed.insert(id);
     }
     for &id in explicit_removed {
         if removed.insert(id) {
-            pages::remove_page(conn, id, None)?;
-            docs::delete(conn, &id.to_string())?;
+            note_purged(conn, id, &mut purged)?;
+            pages::remove_page(conn, id, None, now)?;
+            drop_document(conn, id)?;
             cache.remove(id);
         }
     }
@@ -58,9 +66,9 @@ pub(crate) fn apply_tree_changes(
             // A page whose node just appeared may already have content (it
             // arrived first, or it was created in this very transaction).
             match cache.get(id) {
-                Some(doc) => pages::index_page(conn, id, doc)?,
+                Some(doc) => pages::index_page(conn, id, doc, now)?,
                 None => match load_page(conn, id, peer_id)? {
-                    Some(doc) => pages::index_page(conn, id, &doc)?,
+                    Some(doc) => pages::index_page(conn, id, &doc, now)?,
                     None => pages::reindex_title(conn, id)?,
                 },
             }
@@ -68,7 +76,29 @@ pub(crate) fn apply_tree_changes(
             pages::reindex_title(conn, id)?;
         }
     }
-    Ok(TreeOutcome { removed })
+    Ok(TreeOutcome { removed, purged })
+}
+
+fn note_purged(
+    conn: &Connection,
+    id: NodeId,
+    purged: &mut BTreeMap<String, Vec<String>>,
+) -> Result<()> {
+    let key = id.to_string();
+    if let Some(db) = db_index::row_database(conn, &key)? {
+        purged.entry(db).or_default().push(key);
+    }
+    Ok(())
+}
+
+/// Deletes the stored document of a node that is gone, with what is derived
+/// from it: for a database the index of its cells, for a row the cells that
+/// were indexed for it.
+fn drop_document(conn: &Connection, id: NodeId) -> Result<()> {
+    let key = id.to_string();
+    db_index::remove_database(conn, &key)?;
+    db_index::remove_row(conn, &key)?;
+    docs::delete(conn, &key)
 }
 
 /// Folds the update log of a document into a new snapshot when it has grown
@@ -101,7 +131,7 @@ impl Workspace {
 
     /// Runs a tree operation, then persists what it changed. `extra` runs in
     /// the same transaction with the operation's result.
-    fn local_tree_change<R>(
+    pub(crate) fn local_tree_change<R>(
         &mut self,
         op: impl FnOnce(&WorkspaceTree) -> ne_core::Result<R>,
         removed: impl FnOnce(&R) -> Vec<NodeId>,
@@ -142,19 +172,24 @@ impl Workspace {
             outbox::enqueue(&tx, &DocRef::Tree, &update, now)?;
         }
         extra(&tx, value, &mut self.pages)?;
-        apply_tree_changes(
+        let outcome = apply_tree_changes(
             &tx,
             &self.tree,
             &mut self.pages,
             self.peer_id,
             &changed,
             removed,
+            now,
         )?;
         maybe_compact(&tx, &self.config, TREE_DOC_ID, now, || {
             Ok((self.tree.export_snapshot()?, version.clone()))
         })?;
         tx.commit()?;
         self.tree_version = version;
+        for id in &outcome.removed {
+            self.databases.remove(id);
+        }
+        self.clear_deleted_rows(&outcome.purged);
         Ok(())
     }
 
@@ -182,11 +217,12 @@ impl Workspace {
         title: &str,
     ) -> Result<NodeId> {
         let (peer_id, now) = (self.peer_id, self.now());
+        let clock = self.config.clock.clone();
         self.local_tree_change(
             |tree| tree.create_page(parent, position, title),
             |_| Vec::new(),
             |conn, id, cache| {
-                let doc = PageDoc::with_peer_id(peer_id)?;
+                let doc = PageDoc::with_peer_id(peer_id)?.with_clock(clock);
                 let key = id.to_string();
                 docs::insert(
                     conn,
@@ -296,12 +332,16 @@ impl Workspace {
             self.peer_id,
             &changed,
             &[],
+            now,
         )?;
         maybe_compact(&tx, &self.config, TREE_DOC_ID, now, || {
             Ok((self.tree.export_snapshot()?, version.clone()))
         })?;
         tx.commit()?;
         self.tree_version = version;
+        for id in &outcome.removed {
+            self.databases.remove(id);
+        }
         let nodes = changed
             .into_iter()
             .filter(|id| self.tree.contains(*id))

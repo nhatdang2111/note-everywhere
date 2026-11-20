@@ -14,6 +14,18 @@ export function ToastHost(): JSX.Element {
           <div class={`toast toast-${toast.kind}`} role={toast.kind === "error" ? "alert" : "status"}>
             <Icon name={toast.kind === "error" ? "alert" : toast.kind === "success" ? "check" : "info"} />
             <span class="toast-message">{toast.message}</span>
+            {toast.action && (
+              <button
+                type="button"
+                class="link-button"
+                onClick={() => {
+                  toast.action?.run();
+                  toasts.dismiss(toast.id);
+                }}
+              >
+                {toast.action.label}
+              </button>
+            )}
             <IconButton icon="close" label={t("common.dismiss")} size={14} onClick={() => toasts.dismiss(toast.id)} />
           </div>
         )}

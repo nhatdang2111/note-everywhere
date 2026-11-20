@@ -15,20 +15,28 @@ pub enum NodeKind {
     Folder,
     /// A page. Its content lives in a separate document keyed by the node id.
     Page,
+    /// A database. Its schema, cell values and views live in a separate
+    /// document keyed by the node id; its rows are the page children of the
+    /// node.
+    Database,
 }
 
 impl NodeKind {
-    pub(crate) fn as_str(self) -> &'static str {
+    /// The stable text used in storage.
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Folder => "folder",
             Self::Page => "page",
+            Self::Database => "database",
         }
     }
 
-    pub(crate) fn parse(s: &str) -> Option<Self> {
+    /// The kind a stored text names.
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "folder" => Some(Self::Folder),
             "page" => Some(Self::Page),
+            "database" => Some(Self::Database),
             _ => None,
         }
     }

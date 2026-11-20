@@ -6,7 +6,7 @@ use crate::keys::{AuthKey, RootKey, SecretKey, WorkspaceKey};
 use crate::password::{DerivedKeys, KdfParams, KdfPolicy};
 use crate::recovery::{RecoveryKey, RecoveryKind};
 
-use super::records::{AccountRecord, AccountSecrets, SALT_LEN};
+use super::records::{AccountRecord, AccountSecrets, RecoveryRecord, SALT_LEN};
 use super::{AccountError, derive, fresh_salt, wrapping_key_of};
 
 /// Result of [`create_account`].
@@ -107,6 +107,9 @@ pub fn create_account(
         kdf_salt: salt,
         kdf_params: params,
         auth_verifier: auth::auth_verifier(keys.auth_key()),
+        recovery_verifier: auth::auth_verifier(
+            recovery_key.auth_key(RecoveryKind::Account).as_bytes(),
+        ),
         root_key_by_password: wrap_key(
             &wrapping_key_of(&keys),
             WrapContext::RootKeyByPassword,
@@ -140,8 +143,8 @@ pub fn unlock_with_password(
     begin_login(password, &record.kdf_salt, record.kdf_params, policy)?.unlock(record)
 }
 
-/// Unlocks with the account recovery key, for a forgotten password. Follow up
-/// with [`change_password`] to set a new one.
+/// Unlocks locally with the account recovery key. To reset the password on
+/// the server use [`recover_account`].
 pub fn unlock_with_recovery_key(
     recovery_key: &RecoveryKey,
     record: &AccountRecord,
@@ -153,6 +156,69 @@ pub fn unlock_with_recovery_key(
         &record.root_key_by_recovery,
     )?;
     open_workspace(root_key, record)
+}
+
+/// Result of [`recover_account`].
+#[derive(Debug)]
+pub struct AccountRecovery {
+    /// The unlocked keys, to keep in memory.
+    pub secrets: AccountSecrets,
+    /// Replaces the stored password material. Its recovery fields equal the
+    /// ones the server already holds.
+    pub record: AccountRecord,
+    /// Auth key of the new password, sent so the server can store its verifier.
+    pub auth_key: AuthKey,
+    /// Proves possession of the recovery key to the server.
+    pub recovery_auth_key: AuthKey,
+}
+
+/// Recovers a forgotten password. Unlocks the root and workspace keys with the
+/// recovery key (a wrong key fails here, before anything is sent) and wraps
+/// the root key under `new_password` with a fresh salt. Data is not
+/// re-encrypted, and the recovery key stays valid: it is not rotated.
+///
+/// `stored` holds the blobs the server returned for the account name. For a
+/// name that does not exist the server returns random blobs, which fail like a
+/// wrong key.
+pub fn recover_account(
+    recovery_key: &RecoveryKey,
+    stored: &RecoveryRecord,
+    new_password: &[u8],
+    params: KdfParams,
+    policy: &KdfPolicy,
+) -> Result<AccountRecovery, AccountError> {
+    let root_key: RootKey = unwrap_key(
+        &recovery_key.wrapping_key(RecoveryKind::Account),
+        WrapContext::RootKeyByRecovery,
+        &stored.root_key_by_recovery,
+    )?;
+    let workspace_key: WorkspaceKey =
+        unwrap_key(&root_key, WrapContext::WorkspaceKey, &stored.workspace_key)?;
+    let salt = fresh_salt();
+    let keys = derive(new_password, &salt, params, policy)?;
+    let recovery_auth_key = recovery_key.auth_key(RecoveryKind::Account);
+    let record = AccountRecord {
+        kdf_salt: salt,
+        kdf_params: params,
+        auth_verifier: auth::auth_verifier(keys.auth_key()),
+        recovery_verifier: auth::auth_verifier(recovery_auth_key.as_bytes()),
+        root_key_by_password: wrap_key(
+            &wrapping_key_of(&keys),
+            WrapContext::RootKeyByPassword,
+            &root_key,
+        )?,
+        root_key_by_recovery: stored.root_key_by_recovery.clone(),
+        workspace_key: stored.workspace_key.clone(),
+    };
+    Ok(AccountRecovery {
+        auth_key: AuthKey::from_bytes(keys.auth_key()),
+        secrets: AccountSecrets {
+            root_key,
+            workspace_key,
+        },
+        record,
+        recovery_auth_key,
+    })
 }
 
 /// Re-wraps the root key under a new password with a fresh salt. Workspace data
@@ -178,6 +244,7 @@ pub fn change_password(
         kdf_salt: salt,
         kdf_params: params,
         auth_verifier: auth::auth_verifier(keys.auth_key()),
+        recovery_verifier: record.recovery_verifier,
         root_key_by_password: wrap_key(
             &wrapping_key_of(&keys),
             WrapContext::RootKeyByPassword,

@@ -19,3 +19,19 @@ export const attachmentSrc = (hash: string): string => `${ATTACHMENT_SRC_PREFIX}
 export function parseAttachmentSrc(src: string): string | null {
   return src.startsWith(ATTACHMENT_SRC_PREFIX) ? src.slice(ATTACHMENT_SRC_PREFIX.length) : null;
 }
+
+/**
+ * A copied reference to a synced block travels as `ne-synced:<syncId>` text (and
+ * under `SYNCED_MIME`), so pasting it into another page places the same block.
+ */
+export const SYNCED_REFERENCE_PREFIX = "ne-synced:";
+export const SYNCED_MIME = "application/x-ne-synced";
+
+export const syncedReference = (syncId: string): string => `${SYNCED_REFERENCE_PREFIX}${syncId}`;
+
+export function parseSyncedReference(text: string): string | null {
+  const trimmed = text.trim();
+  return trimmed.startsWith(SYNCED_REFERENCE_PREFIX) && trimmed.length > SYNCED_REFERENCE_PREFIX.length && !/\s/.test(trimmed)
+    ? trimmed.slice(SYNCED_REFERENCE_PREFIX.length)
+    : null;
+}

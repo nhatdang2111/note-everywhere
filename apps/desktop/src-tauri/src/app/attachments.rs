@@ -1,7 +1,5 @@
 //! Adding attachments, their URLs, and moving them to and from the server.
 
-use std::path::Path;
-
 use ne_store::AttachmentInfo;
 use ne_sync::BlobRef;
 
@@ -12,26 +10,47 @@ use super::{AppCore, AppError, AppResult};
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "svg"];
 
-/// A file name without any directory part, safe to use as a path component.
+/// Names Windows reserves for devices, with or without an extension.
+const RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// A file name without any directory part, safe to use as a path component on
+/// every platform. Both `/` and `\` separate components wherever the app runs,
+/// so the same input always gives the same output; `std::path` is not used
+/// because it only treats `\` as a separator on Windows.
 fn safe_name(name: &str) -> String {
-    let base = Path::new(name)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let cleaned: String = base
+    let base = name
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or("");
+    if matches!(base, "" | "." | "..") {
+        return "attachment".to_owned();
+    }
+    let replaced: String = base
         .chars()
         .map(|c| {
-            if c.is_control() || matches!(c, '/' | '\\' | ':') {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
                 '_'
             } else {
                 c
             }
         })
         .collect();
-    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
-        "attachment".to_owned()
+    // Windows drops trailing dots and spaces, which would change the name.
+    let cleaned = replaced.trim_end_matches(['.', ' ']);
+    if cleaned.is_empty() {
+        return "attachment".to_owned();
+    }
+    let stem = cleaned.split('.').next().unwrap_or("").trim_end();
+    if RESERVED_NAMES
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+    {
+        format!("_{cleaned}")
     } else {
-        cleaned
+        cleaned.to_owned()
     }
 }
 
@@ -226,5 +245,27 @@ mod tests {
         assert_eq!(safe_name("a:b.png"), "a_b.png");
         assert_eq!(safe_name(".."), "attachment");
         assert_eq!(safe_name(""), "attachment");
+    }
+
+    #[test]
+    fn backslash_paths_are_handled_on_every_platform() {
+        assert_eq!(safe_name("..\\..\\secret.txt"), "secret.txt");
+        assert_eq!(safe_name("C:\\Users\\x\\a.png"), "a.png");
+        assert_eq!(safe_name("dir/sub\\file.png"), "file.png");
+        assert_eq!(safe_name("folder/"), "folder");
+        assert_eq!(safe_name("a\\.."), "attachment");
+        assert_eq!(safe_name("a<b>|c?*.png"), "a_b__c__.png");
+    }
+
+    #[test]
+    fn windows_reserved_names_and_trailing_dots_are_neutralised() {
+        assert_eq!(safe_name("con"), "_con");
+        assert_eq!(safe_name("NUL.txt"), "_NUL.txt");
+        assert_eq!(safe_name("dir\\Com1.png"), "_Com1.png");
+        assert_eq!(safe_name("lpt9"), "_lpt9");
+        assert_eq!(safe_name("console.txt"), "console.txt");
+        assert_eq!(safe_name("photo."), "photo");
+        assert_eq!(safe_name("..."), "attachment");
+        assert_eq!(safe_name("report .  "), "report");
     }
 }

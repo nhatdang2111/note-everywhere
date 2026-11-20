@@ -1,6 +1,8 @@
 import type { Node as PmNode } from "prosemirror-model";
 import { Selection } from "prosemirror-state";
 import type { Command } from "prosemirror-state";
+import type { EditorView } from "prosemirror-view";
+import { attachmentSrc } from "./page-links.ts";
 import { BLOCK_NODE_NAMES, pageSchema } from "./schema.ts";
 
 export type BlockKind = (typeof BLOCK_NODE_NAMES)[number];
@@ -119,3 +121,29 @@ const KIND_TO_CHOICE: Record<BlockKind, BlockChoice> = {
 
 /** Insert by schema node name; heading inserts level 1. */
 export const insertBlock = (kind: BlockKind): Command => insertChoice(KIND_TO_CHOICE[kind]);
+
+/** A synced-block placeholder for the shared document `syncId`. */
+export const createSyncedBlock = (syncId: string): PmNode => nodes.synced_block.create({ syncId });
+
+export const insertSyncedBlock = (syncId: string): Command => insertNode(createSyncedBlock(syncId));
+
+/** True when the node, or anything inside it, is a synced-block placeholder. */
+export function containsSyncedBlock(node: PmNode): boolean {
+  let found = node.type === nodes.synced_block;
+  node.descendants((child) => {
+    if (child.type === nodes.synced_block) found = true;
+    return !found;
+  });
+  return found;
+}
+
+/**
+ * A paragraph holding only a link to a stored file (`attachment:<hash>`), put
+ * after the block with the cursor. This is how a voice recording is kept in a
+ * page: the document has no file block, and a link mark is something every
+ * reader of the document already understands.
+ */
+export function insertAttachmentBlock(view: EditorView, hash: string, label: string): void {
+  const text = pageSchema.text(label, [pageSchema.marks.link.create({ href: attachmentSrc(hash) })]);
+  insertNode(nodes.paragraph.create(null, text))(view.state, view.dispatch);
+}

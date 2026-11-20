@@ -27,9 +27,12 @@ export function Sidebar(): JSX.Element {
 
   const workspaceEntries = (): MenuEntry[] => [
     { kind: "item", icon: "page", label: t("sidebar.newPage"), onSelect: () => void app.createNode("page", null) },
+    { kind: "item", icon: "page", label: t("sidebar.newFromTemplate"), onSelect: () => ui.openDialog({ kind: "template-gallery", parentId: null }) },
+    { kind: "item", icon: "database", label: t("sidebar.newDatabase"), onSelect: () => void app.createNode("database", null) },
     { kind: "item", icon: "folder", label: t("sidebar.newFolder"), onSelect: () => void app.createNode("folder", null) },
     { kind: "separator" },
     { kind: "item", icon: "download", label: t("sidebar.importMarkdown"), onSelect: () => void app.importMarkdown(null) },
+    { kind: "item", icon: "download", label: t("sidebar.importStructured"), onSelect: () => ui.openDialog({ kind: "import-structured", parentId: null }) },
     { kind: "item", icon: "upload", label: t("sidebar.exportAll"), onSelect: () => void app.exportMarkdown(null) },
   ];
 
@@ -65,7 +68,7 @@ export function Sidebar(): JSX.Element {
                       type="button"
                       class="nav-button"
                       aria-current={tabs.activePageId() === node.id ? "page" : undefined}
-                      onClick={(event) => (node.kind === "page" ? app.openPage(node.id, event.metaKey || event.ctrlKey) : tree.setExpanded(node.id, true))}
+                      onClick={(event) => (node.kind !== "folder" ? app.openPage(node.id, event.metaKey || event.ctrlKey) : tree.setExpanded(node.id, true))}
                     >
                       <Icon name="star" filled />
                       <span class="nav-label">{node.title || t("tree.untitled")}</span>
@@ -83,6 +86,7 @@ export function Sidebar(): JSX.Element {
               {t("sidebar.pages")}
             </h2>
             <IconButton icon="page" size={14} label={t("sidebar.newPage")} onClick={() => void app.createNode("page", null)} />
+            <IconButton icon="database" size={14} label={t("sidebar.newDatabase")} onClick={() => void app.createNode("database", null)} />
             <IconButton icon="folder" size={14} label={t("sidebar.newFolder")} onClick={() => void app.createNode("folder", null)} />
           </div>
           <ErrorBanner error={tree.error()}>
@@ -97,6 +101,13 @@ export function Sidebar(): JSX.Element {
       </div>
 
       <div class="sidebar-footer">
+        <button type="button" class="nav-button" aria-pressed={ui.sidePanel() === "reminders"} onClick={() => ui.toggleSidePanel("reminders")}>
+          <Icon name="bell" />
+          <span>{t("sidebar.reminders")}</span>
+          <Show when={app.reminders.dueCount() > 0}>
+            <span class="badge" aria-label={t("reminder.dueBadge", { count: app.reminders.dueCount() })}>{app.reminders.dueCount()}</span>
+          </Show>
+        </button>
         <NavButton icon="trash" label={t("sidebar.trash")} target={{ kind: "trash" }} />
         <NavButton icon="key" label={t("sidebar.vault")} target={{ kind: "vault" }} />
         <NavButton icon="settings" label={t("sidebar.settings")} target={{ kind: "settings" }} />

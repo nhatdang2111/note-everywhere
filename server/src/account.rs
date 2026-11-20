@@ -7,8 +7,9 @@
 use ne_crypto::auth;
 use ne_sync_protocol::ids::{hex_encode, is_valid_label, normalize_username};
 use ne_sync_protocol::wire::{
-    AccountRecordWire, ChangePasswordRequest, KdfParamsWire, LoginRequest, RegisterRequest,
-    SaltRequest, SaltResponse, SessionList, SessionResponse, VaultRecordWire, WorkspaceKeyBody,
+    AccountRecordWire, ChangePasswordRequest, KdfParamsWire, LoginRequest, RecoverRequest,
+    RecoveryLookupRequest, RecoveryLookupResponse, RegisterRequest, SaltRequest, SaltResponse,
+    SessionList, SessionResponse, VaultRecordWire, WRAPPED_KEY_LEN, WorkspaceKeyBody,
     b64_decode_array, b64_encode, is_wrapped_key,
 };
 use sha2::{Digest, Sha256};
@@ -30,6 +31,9 @@ const DEFAULT_KDF: KdfParamsWire = KdfParamsWire {
     parallelism: 4,
 };
 const SETUP_BUCKET: &str = "setup:global";
+/// Version byte every sealed blob starts with, so a made-up blob has the
+/// same first byte as a real one.
+const SEALED_VERSION: u8 = 1;
 
 fn digest_eq(a: &str, b: &str) -> bool {
     Sha256::digest(a.as_bytes())
@@ -80,6 +84,18 @@ impl Workspace {
         hasher.update(self.seed()?.as_bytes());
         hasher.update(name.as_bytes());
         Ok(hasher.finalize().into())
+    }
+
+    /// A wrapped-key-shaped blob that is the same for the same name every
+    /// time and unpredictable without the seed.
+    fn fake_wrapped_key(&self, label: &str, name: &str) -> ApiResult<String> {
+        let mut bytes = Vec::with_capacity(96);
+        for part in 0..3u8 {
+            bytes.extend_from_slice(&self.fake_digest(&format!("{label}{part}"), name)?);
+        }
+        bytes.truncate(WRAPPED_KEY_LEN);
+        bytes[0] = SEALED_VERSION;
+        Ok(b64_encode(&bytes))
     }
 
     fn session_response(
@@ -143,6 +159,8 @@ impl Workspace {
         let username = normalize_username(&body.username).ok_or(ApiError::BadRequest)?;
         let auth_key: [u8; auth::LEN] =
             b64_decode_array(&body.auth_key).ok_or(ApiError::BadRequest)?;
+        let recovery_key: [u8; auth::LEN] =
+            b64_decode_array(&body.recovery_auth_key).ok_or(ApiError::BadRequest)?;
         if !is_valid_label(&body.device_label) || !body.record.is_valid() {
             return Err(ApiError::BadRequest);
         }
@@ -152,6 +170,7 @@ impl Workspace {
         // between, so a registration is stored completely or not at all.
         let mut record = body.record;
         record.auth_verifier = b64_encode(&auth::auth_verifier(&auth_key));
+        record.recovery_verifier = Some(b64_encode(&auth::auth_verifier(&recovery_key)));
         self.db.set_meta(META_USERNAME, &username)?;
         self.save_record(&record)?;
         self.db.set_meta(META_WORKSPACE, &workspace_id)?;
@@ -194,6 +213,101 @@ impl Workspace {
             }
         };
         throttle::record_success(&self.db, &buckets)?;
+        Ok(json(
+            200,
+            &self.session_response(&body.device_label, record, now)?,
+        )?)
+    }
+
+    /// Hands out the blobs the recovery key opens. Unknown names get made-up
+    /// blobs, so the answer says nothing about which names exist.
+    /// Test-only: turns the stored account into one created before recovery
+    /// verification existed.
+    pub(crate) fn strip_recovery_verifier(&self) -> ApiResult<()> {
+        let mut account = self.require_account()?;
+        account.record.recovery_verifier = None;
+        self.save_record(&account.record)
+    }
+
+    pub(crate) async fn recovery_lookup(&self, req: &mut Request) -> ApiResult<Response> {
+        let body: RecoveryLookupRequest = read_json(req).await?;
+        let name = normalize_username(&body.username).ok_or(ApiError::BadRequest)?;
+        let response = match self.load_account()? {
+            Some(a) if digest_eq(&a.username, &name) => RecoveryLookupResponse {
+                root_key_by_recovery: a.record.root_key_by_recovery,
+                workspace_key: a.record.workspace_key,
+            },
+            _ => RecoveryLookupResponse {
+                root_key_by_recovery: self.fake_wrapped_key("recovery-root", &name)?,
+                workspace_key: self.fake_wrapped_key("recovery-workspace", &name)?,
+            },
+        };
+        Ok(json(200, &response)?)
+    }
+
+    /// Sets a new password for someone who proves they hold the recovery key.
+    /// Throttled like a login, in buckets of its own. Every session is ended
+    /// and a fresh one is returned.
+    pub(crate) async fn recover(
+        &self,
+        req: &mut Request,
+        ip: &str,
+        now: u64,
+    ) -> ApiResult<Response> {
+        let body: RecoverRequest = read_json(req).await?;
+        let name = normalize_username(&body.username).ok_or(ApiError::BadRequest)?;
+        let recovery_key: [u8; auth::LEN] =
+            b64_decode_array(&body.recovery_auth_key).ok_or(ApiError::BadRequest)?;
+        let new_key: [u8; auth::LEN] =
+            b64_decode_array(&body.new_auth_key).ok_or(ApiError::BadRequest)?;
+        if !is_valid_label(&body.device_label) || !body.record.is_valid() {
+            return Err(ApiError::BadRequest);
+        }
+        let buckets = [
+            throttle::recovery_account_key(&name),
+            throttle::recovery_ip_key(ip),
+        ];
+        if let Some(secs) = throttle::remaining_lock(&self.db, &buckets, now)? {
+            return Err(ApiError::Locked(secs));
+        }
+        let account = self.load_account()?;
+        // Unknown names are checked against a verifier nobody can match, so the
+        // timing and the answer equal those of a wrong recovery key.
+        let (verifier, name_matches) = match &account {
+            Some(a) if digest_eq(&a.username, &name) => {
+                match a.record.recovery_verifier.as_deref() {
+                    Some(stored) => (
+                        b64_decode_array::<{ auth::LEN }>(stored).ok_or(ApiError::Unavailable)?,
+                        true,
+                    ),
+                    // Created before recovery verification existed: there is
+                    // nothing to check against. Only reachable with the right
+                    // name, which is no secret on a one-account server.
+                    None => return Err(ApiError::RecoveryUnavailable),
+                }
+            }
+            _ => (self.fake_digest("recovery-verifier", &name)?, false),
+        };
+        let key_matches = auth::verify(&recovery_key, &verifier);
+        let mut record = match (account, key_matches & name_matches) {
+            (Some(a), true) => a.record,
+            _ => {
+                throttle::record_failure(&self.db, &self.cfg, &buckets, now)?;
+                return Err(ApiError::InvalidCredentials);
+            }
+        };
+        throttle::record_success(&self.db, &buckets)?;
+
+        // Only the new password material is taken from the request; the
+        // recovery blobs and verifier stay as stored, so the recovery key
+        // remains valid and unchanged.
+        record.kdf_salt = body.record.kdf_salt;
+        record.kdf_params = body.record.kdf_params;
+        record.root_key_by_password = body.record.root_key_by_password;
+        record.auth_verifier = b64_encode(&auth::auth_verifier(&new_key));
+        self.save_record(&record)?;
+        let revoked = sessions::revoke_all(&self.db)?;
+        self.close_session_sockets(&revoked);
         Ok(json(
             200,
             &self.session_response(&body.device_label, record, now)?,

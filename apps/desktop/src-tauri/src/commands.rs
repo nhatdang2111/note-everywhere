@@ -4,18 +4,33 @@
 //! whole invoke payload, so a command reads its fields from the raw request
 //! body instead of declaring one parameter per field.
 
+use std::collections::BTreeMap;
+
+use ne_core::database::{CellValue, QueryResult, ViewDef, ViewKind};
+use ne_core::page::{Block, HistoryReport};
+use ne_core::template::Template;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tauri::State;
 use tauri::ipc::{InvokeBody, Request};
 
+use crate::app::db_api::{
+    DatabaseSchema, DbPropertyAddArgs, DbPropertyChangeTypeArgs, DbQueryArgs, DbRowCreateArgs,
+};
+use crate::app::reminder_api::ReminderAddArgs;
+use crate::app::synced_api::{SyncedBlockInfo, SyncedOccurrence};
+use crate::app::types::ReminderEntryDto;
 use crate::app::types::{
     AddedAttachment, Backlink, CreateNodeArgs, DeviceSession, GeneratePasswordArgs,
     GeneratedPassword, MoveNodeArgs, OpenPage, RecoverAccountArgs, SearchHit, SessionStatus,
     Settings, SettingsPatch, SignInArgs, SignUpArgs, SyncStatus, TrashEntry, TreeNode,
     VaultImportReport, VaultItemInput, VaultItemSummary, VoiceStatus, VoiceText,
 };
+use crate::app::update::UpdateStatus;
 use crate::app::{AppCore, AppError};
+
+/// Default values of a row template, by property id.
+type Defaults = BTreeMap<String, CellValue>;
 
 fn parse<T: DeserializeOwned>(request: &Request<'_>) -> Result<T, AppError> {
     match request.body() {
@@ -171,3 +186,128 @@ command!(voice_cancel -> (), |core| core.voice_cancel().await);
 // Settings
 command!(settings_get -> Settings, |core| core.settings_get().await);
 command!(settings_set { settings: SettingsPatch } -> Settings, |core, a| core.settings_set(a.settings).await);
+
+// Databases
+command!(db_create { parent_id: Option<String>, index: Option<usize>, title: Option<String> } -> String, |core, a| {
+    core.db_create(a.parent_id.as_deref(), a.index, a.title.as_deref()).await
+});
+command!(db_schema { id: String } -> DatabaseSchema, |core, a| core.db_schema(&a.id).await);
+command!(db_query (DbQueryArgs) -> QueryResult, |core, a| core.db_query(a).await);
+command!(db_property_add (DbPropertyAddArgs) -> String, |core, a| core.db_property_add(a).await);
+command!(db_property_rename { id: String, property_id: String, name: String } -> (), |core, a| {
+    core.db_property_rename(&a.id, &a.property_id, &a.name).await
+});
+command!(db_property_delete { id: String, property_id: String } -> (), |core, a| {
+    core.db_property_delete(&a.id, &a.property_id).await
+});
+command!(db_property_move { id: String, property_id: String, index: usize } -> (), |core, a| {
+    core.db_property_move(&a.id, &a.property_id, a.index).await
+});
+command!(db_property_change_type (DbPropertyChangeTypeArgs) -> (), |core, a| core.db_property_change_type(a).await);
+command!(db_relation_add { id: String, name: String, target_id: String, reverse_name: Option<String> } -> String, |core, a| {
+    core.db_relation_add(&a.id, &a.name, &a.target_id, a.reverse_name.as_deref()).await
+});
+command!(db_option_add { id: String, property_id: String, name: String, color: Option<String> } -> String, |core, a| {
+    core.db_option_add(&a.id, &a.property_id, &a.name, a.color.as_deref()).await
+});
+command!(db_option_rename { id: String, property_id: String, option_id: String, name: String } -> (), |core, a| {
+    core.db_option_rename(&a.id, &a.property_id, &a.option_id, &a.name).await
+});
+command!(db_option_color { id: String, property_id: String, option_id: String, color: String } -> (), |core, a| {
+    core.db_option_color(&a.id, &a.property_id, &a.option_id, &a.color).await
+});
+command!(db_option_delete { id: String, property_id: String, option_id: String } -> (), |core, a| {
+    core.db_option_delete(&a.id, &a.property_id, &a.option_id).await
+});
+command!(db_option_move { id: String, property_id: String, option_id: String, index: usize } -> (), |core, a| {
+    core.db_option_move(&a.id, &a.property_id, &a.option_id, a.index).await
+});
+command!(db_row_create (DbRowCreateArgs) -> String, |core, a| core.db_row_create(a).await);
+command!(db_cell_set { id: String, row_id: String, property_id: String, value: Option<CellValue> } -> (), |core, a| {
+    core.db_cell_set(&a.id, &a.row_id, &a.property_id, a.value).await
+});
+command!(db_card_move { id: String, row_id: String, property_id: String, group: Option<String>, before_id: Option<String> } -> (), |core, a| {
+    core.db_card_move(&a.id, &a.row_id, &a.property_id, a.group.as_deref(), a.before_id.as_deref()).await
+});
+command!(db_view_add { id: String, name: String, kind: ViewKind } -> String, |core, a| {
+    core.db_view_add(&a.id, &a.name, a.kind).await
+});
+command!(db_view_save { id: String, view: ViewDef } -> (), |core, a| core.db_view_save(&a.id, a.view).await);
+command!(db_view_delete { id: String, view_id: String } -> (), |core, a| core.db_view_delete(&a.id, &a.view_id).await);
+command!(db_view_move { id: String, view_id: String, index: usize } -> (), |core, a| {
+    core.db_view_move(&a.id, &a.view_id, a.index).await
+});
+
+// Templates
+command!(template_list { database_id: Option<String> } -> Vec<Template>, |core, a| {
+    core.template_list(a.database_id.as_deref()).await
+});
+command!(template_create_from_page { page_id: String, name: String } -> String, |core, a| {
+    core.template_create_from_page(&a.page_id, &a.name).await
+});
+command!(template_create_for_database { database_id: String, name: String, from_row_id: Option<String> } -> String, |core, a| {
+    core.template_create_for_database(&a.database_id, &a.name, a.from_row_id.as_deref()).await
+});
+command!(template_rename { id: String, name: String } -> (), |core, a| core.template_rename(&a.id, &a.name).await);
+command!(template_set_defaults { id: String, defaults: Defaults } -> (), |core, a| {
+    core.template_set_defaults(&a.id, &a.defaults).await
+});
+command!(template_delete { id: String } -> (), |core, a| core.template_delete(&a.id).await);
+command!(template_instantiate_page { id: String, parent_id: Option<String>, index: Option<usize>, title: Option<String> } -> String, |core, a| {
+    core.template_instantiate_page(&a.id, a.parent_id.as_deref(), a.index, a.title.as_deref()).await
+});
+command!(template_instantiate_row { id: String, title: Option<String> } -> String, |core, a| {
+    core.template_instantiate_row(&a.id, a.title.as_deref()).await
+});
+
+// Page history
+command!(page_history { id: String } -> HistoryReport, |core, a| core.page_history(&a.id).await);
+command!(page_version_preview { id: String, version_id: String } -> Vec<Block>, |core, a| {
+    core.page_version_preview(&a.id, &a.version_id).await
+});
+command!(page_version_restore { id: String, version_id: String } -> (), |core, a| {
+    core.page_version_restore(&a.id, &a.version_id).await
+});
+
+// Structured import
+command!(import_structured { parent_id: Option<String> } -> Option<Value>, |core, a| {
+    core.import_structured(a.parent_id.as_deref()).await
+});
+
+// Synced blocks
+command!(synced_create { page_id: String, start: usize, end: usize } -> Value, |core, a| {
+    let sync_id = core.synced_create(&a.page_id, a.start, a.end).await?;
+    Ok(json!({ "syncId": sync_id }))
+});
+command!(synced_insert { page_id: String, parent_path: Vec<usize>, index: usize, sync_id: String } -> (), |core, a| {
+    core.synced_insert(&a.page_id, &a.parent_path, a.index, &a.sync_id).await
+});
+command!(synced_open { sync_id: String } -> OpenPage, |core, a| core.synced_open(&a.sync_id).await);
+command!(synced_apply_update { sync_id: String, update: Vec<u8> } -> (), |core, a| {
+    core.synced_apply_update(&a.sync_id, &a.update).await
+});
+command!(synced_close { sync_id: String } -> (), |core, a| core.synced_close(&a.sync_id).await);
+command!(synced_unsync { page_id: String, path: Vec<usize> } -> (), |core, a| {
+    core.synced_unsync(&a.page_id, &a.path).await
+});
+command!(synced_occurrences { sync_id: String } -> Vec<SyncedOccurrence>, |core, a| {
+    core.synced_occurrences(&a.sync_id).await
+});
+command!(synced_list -> Vec<SyncedBlockInfo>, |core| core.synced_list().await);
+
+// Reminders
+command!(reminder_add (ReminderAddArgs) -> ne_core::reminders::Reminder, |core, a| core.reminder_add(a).await);
+command!(reminder_list { include_done: Option<bool> } -> Vec<ReminderEntryDto>, |core, a| {
+    core.reminder_list(a.include_done).await
+});
+command!(reminder_set_done { id: String, done: bool } -> (), |core, a| core.reminder_set_done(&a.id, a.done).await);
+command!(reminder_snooze { id: String, until: i64 } -> (), |core, a| core.reminder_snooze(&a.id, a.until).await);
+command!(reminder_reschedule { id: String, at: i64 } -> (), |core, a| core.reminder_reschedule(&a.id, a.at).await);
+command!(reminder_set_note { id: String, note: String } -> (), |core, a| core.reminder_set_note(&a.id, &a.note).await);
+command!(reminder_delete { id: String } -> (), |core, a| core.reminder_delete(&a.id).await);
+
+// Updates
+command!(update_status -> UpdateStatus, |core| core.update_status().await);
+command!(update_check -> UpdateStatus, |core| core.update_check().await);
+command!(update_download -> UpdateStatus, |core| core.update_download().await);
+command!(update_install -> (), |core| core.update_install().await);

@@ -39,7 +39,7 @@ Giao diện chạy trong webview của hệ điều hành (WKWebView, WebView2) 
 
 | Mối đe doạ | Biện pháp hiện có | Còn thiếu hoặc không chắc |
 |---|---|---|
-| Script lạ chạy trong webview (XSS qua nội dung nhập, tiêu đề đến từ thiết bị khác, link) | CSP của cửa sổ chính: `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost`. Không tải nội dung từ xa, không `fetch` ra ngoài từ webview. `withGlobalTauri` tắt. Capability chỉ có `core:default` cho cửa sổ `main`. HTML thô khi nhập Markdown bị đổi thành văn bản, không dựng thành HTML | `wasm-unsafe-eval` là bắt buộc cho `loro-crdt` (ADR 0002, 0006) và nới CSP; `style-src 'unsafe-inline'` cũng vậy. Chưa kiểm chứng rằng mọi chỗ hiển thị nội dung (tiêu đề, link, ảnh, callout) đều thoát ký tự đúng, và chưa kiểm hạn chế scheme của link (ví dụ `javascript:`) |
+| Script lạ chạy trong webview (XSS qua nội dung nhập, tiêu đề đến từ thiết bị khác, link) | CSP của cửa sổ chính: `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ne-attachment: http://ne-attachment.localhost https://ne-attachment.localhost; media-src 'self' blob: ne-attachment: http://ne-attachment.localhost https://ne-attachment.localhost; connect-src ipc: http://ipc.localhost`. Không tải nội dung từ xa, không `fetch` ra ngoài từ webview. `withGlobalTauri` tắt. Capability của cửa sổ `main` chỉ có `core:event:default` (chỉ nghe sự kiện); lệnh IPC của chính app không cần quyền capability, hộp thoại/clipboard/global shortcut/thông báo/updater đều gọi từ phía Rust nên webview không cần quyền riêng cho chúng. HTML thô khi nhập Markdown bị đổi thành văn bản, không dựng thành HTML | `wasm-unsafe-eval` là bắt buộc cho `loro-crdt` (ADR 0002, 0006) và nới CSP; `style-src 'unsafe-inline'` cũng vậy. `img-src`/`media-src` nới cho scheme `ne-attachment:` để hiển thị ảnh và phát âm thanh/video đính kèm tại chỗ; scheme này chỉ phân giải SHA-256 hex hợp lệ mà store đã biết (không có đường dẫn để leo thang) và SVG không nằm trong danh sách kiểu an toàn nên luôn tải xuống dưới dạng file thay vì hiển thị như ảnh. Chưa kiểm chứng rằng mọi chỗ hiển thị nội dung (tiêu đề, link, ảnh, callout) đều thoát ký tự đúng, và chưa kiểm hạn chế scheme của link (ví dụ `javascript:`) |
 | Lệnh IPC bị lạm dụng (đọc file tuỳ ý, lộ khoá) | Hiện shell mới có lệnh `app_version`; bề mặt IPC thật chưa tồn tại | Khi các lệnh xuất hiện phải rà soát từng lệnh: kiểm tra tham số ở biên, không trả khoá hay bản rõ không cần thiết, không có lệnh đọc/ghi đường dẫn tuỳ ý. Chưa có test bảo mật cho IPC |
 | Thư viện webview của hệ điều hành có lỗ hổng | Hệ điều hành tự vá | Ngoài tầm kiểm soát của dự án |
 
@@ -49,7 +49,7 @@ Mô hình: server chỉ thấy bản mã; chi tiết cái gì thấy và không 
 
 | Mối đe doạ | Biện pháp hiện có | Còn thiếu hoặc không chắc |
 |---|---|---|
-| T1 đọc hoặc sửa nội dung | Mã hoá phong bì XChaCha20-Poly1305; id workspace, tài liệu và thiết bị là AAD nên không chuyển update sang nơi khác được; file đính kèm xác thực từng khối và địa chỉ SHA-256 | Server vẫn giữ, xoá hoặc phát lại log cũ mà client không phát hiện được bằng mật mã (security-model mục 3, 6) |
+| T1 đọc hoặc sửa nội dung | Mã hoá phong bì XChaCha20-Poly1305; id workspace, tài liệu và thiết bị là AAD nên không chuyển update sang nơi khác được; file đính kèm xác thực từng khối và địa chỉ SHA-256 | Server vẫn giữ, xoá hoặc phát lại log cũ mà client không phát hiện được bằng mật mã (security-model mục 3, 7) |
 | Đoán mật khẩu offline từ dữ liệu server bị lấy | Argon2id; `KdfPolicy` chặn tham số yếu do server giả mạo | Mật khẩu yếu vẫn bị dò được. Tham số 256 MiB, 3 vòng là tạm thời, chưa đo trên Windows (ADR 0003) |
 | T2 dò mật khẩu qua API | Khoá tạm tăng dần theo tên tài khoản và theo IP; tên không tồn tại có salt giả ổn định; token phiên chỉ lưu dạng băm, có hạn và thu hồi được | Kẻ biết tên tài khoản có thể khoá chủ tài khoản tối đa một giờ (đã chấp nhận ở ADR 0004) |
 | T2 tạo tài khoản lạ trên server vừa triển khai | Đăng ký cần `SETUP_CODE` (≥ 12 ký tự), sai mã bị giới hạn như đăng nhập, sau tài khoản đầu tiên đăng ký đóng vĩnh viễn | Khoảng giữa lúc `deploy` và lúc người dùng tạo tài khoản phụ thuộc vào độ mạnh của mã thiết lập; người dùng tự giữ bí mật mã này |
@@ -62,9 +62,9 @@ Mô hình: server chỉ thấy bản mã; chi tiết cái gì thấy và không 
 
 | Mối đe doạ | Biện pháp hiện có | Còn thiếu hoặc không chắc |
 |---|---|---|
-| Kẻ tấn công thay bản cập nhật | Hiện **không có** cập nhật tự động: người dùng tải bằng tay. Workflow release có thể tạo chữ ký updater (`.sig`) khi có secret | App chưa tích hợp updater, `tauri.conf.json` chưa có `pubkey`, workflow chưa sinh `latest.json` ([deployment-guide.md](./deployment-guide.md) mục 4). Chữ ký updater, khi có, chỉ chứng minh bản cập nhật do chủ khoá riêng tạo |
-| Khoá riêng của updater bị lộ hoặc mất | Lưu ở secret của repository; hướng dẫn sao lưu tách biệt | Không có cơ chế xoay khoá. Lộ khoá cho phép phát hành bản cập nhật giả; mất khoá làm các bản đã cài không cập nhật được |
-| Tài khoản GitHub hoặc workflow bị chiếm, phát hành bản độc | Release luôn ở trạng thái nháp để người duyệt; quyền ghi chỉ ở job `release` | Checksum nằm cùng trang với bộ cài nên **không chống được** kẻ kiểm soát trang đó. Chưa bật xác thực hai yếu tố hay bảo vệ tag/nhánh được ghi nhận ở đâu trong repository; cần kiểm tra thủ công. Chưa có chứng thực nguồn gốc bản build (provenance attestation) |
+| Kẻ tấn công thay bản cập nhật | App có updater (`apps/desktop/src-tauri/src/app/update.rs`, `updater.rs`): kiểm tra khi khởi động tối đa một lần mỗi ngày, tải về và cài đều là lệnh riêng do người dùng bấm (**không bao giờ tự cài ngầm**), chữ ký được plugin kiểm trước khi trả byte tải về và kiểm lại lần nữa ngay trước khi cài. Khoá công khai do workflow phát hành ghép vào `plugins.updater.pubkey` tại thời điểm build; `tauri.conf.json` commit không chứa khoá. Bản build không có khoá báo trạng thái `unavailable` và **không gọi mạng** để tìm bản mới (`updater_configured`) | Chữ ký updater chỉ chứng minh bản cập nhật do chủ khoá riêng tạo — nó không chứng minh gì về **bản cài đầu tiên**. Bộ cài (`.dmg`, `-setup.exe`) không có chữ ký của hệ điều hành (mục 3.4), nên ở lần cài đầu người dùng chỉ có `SHA256SUMS.txt` công bố cùng trang Releases để đối chiếu, không phải một gốc tin cậy độc lập với trang đó. Tóm lại: **chữ ký updater, chứ không phải hệ điều hành, là thứ xác thực bản cập nhật**; gốc tin cậy của nó là khoá công khai cài sẵn trong app, còn bản cài đầu tiên chỉ được "xác thực" bằng checksum công khai nằm cùng chỗ với bộ cài |
+| Khoá riêng của updater bị lộ hoặc mất | Lưu ở secret của repository (`TAURI_SIGNING_PRIVATE_KEY`); hướng dẫn sao lưu tách biệt ([deployment-guide.md](./deployment-guide.md) mục 2.1) | Không có cơ chế xoay khoá, vì khoá công khai đã nằm trong mọi bản đã cài. Lộ khoá riêng cho phép ký và phát hành bản cập nhật độc hại mà app chấp nhận; mất khoá riêng làm mọi bản đã cài ngừng nhận cập nhật vĩnh viễn, không có quy trình xử lý sự cố nào được viết ra |
+| Tài khoản GitHub hoặc workflow bị chiếm, phát hành bản độc | Release luôn ở trạng thái nháp để người duyệt; quyền ghi chỉ ở job `release`; `latest.json` chỉ trỏ bản **đã Publish** (deployment-guide mục 4) | Checksum nằm cùng trang với bộ cài nên **không chống được** kẻ kiểm soát trang đó. Chưa bật xác thực hai yếu tố hay bảo vệ tag/nhánh được ghi nhận ở đâu trong repository; cần kiểm tra thủ công. Chưa có chứng thực nguồn gốc bản build (provenance attestation) |
 
 ### 3.4 Chuỗi cung ứng và bộ cài không ký
 
@@ -86,7 +86,7 @@ Mô hình: server chỉ thấy bản mã; chi tiết cái gì thấy và không 
 | HTML thô, link nguy hiểm trong Markdown | HTML thô thành văn bản; link ngoài giữ nguyên ở dạng link | Hạn chế scheme của link chưa được xác minh (xem 3.1) |
 | Tên file xuất không hợp lệ hoặc tạo đường dẫn lạ | Xuất dùng tên hợp lệ trên Windows | Chưa có test đối kháng về tên ghi đè |
 | Nhập CSV mật khẩu từ trình quản lý khác | Đọc trên văn bản mượn, xoá từng bản ghi sau khi dùng, báo cáo chỉ nêu số dòng, không nêu nội dung | File CSV gốc chứa mật khẩu rõ nằm trên đĩa do người dùng giữ; ứng dụng không xoá hộ |
-| Xuất CSV vault | Xem, sao chép và xuất secret đòi nhập lại mật khẩu cấp 2 khi đã quá thời gian ân hạn của chính sách khoá (security-model mục 5) | File xuất là **bản rõ** của mọi secret; ô bắt đầu bằng `=`, `+`, `-`, `@` bị bảng tính hiểu là công thức vì export không đổi giá trị |
+| Xuất CSV vault | Xem, sao chép và xuất secret đòi nhập lại mật khẩu cấp 2 khi đã quá thời gian ân hạn của chính sách khoá (security-model mục 6) | File xuất là **bản rõ** của mọi secret; ô bắt đầu bằng `=`, `+`, `-`, `@` bị bảng tính hiểu là công thức vì export không đổi giá trị |
 
 ### 3.6 File đính kèm
 
@@ -106,16 +106,16 @@ Mô hình: server chỉ thấy bản mã; chi tiết cái gì thấy và không 
 
 ### 3.8 Kho khoá của hệ điều hành và vault
 
-Mô tả và giới hạn ở security-model mục 4.2, 4.3 và 5. Tóm tắt phần liên quan tới điểm vào: token phiên và khoá gốc nằm trong keychain nên T3 đọc được chúng; khoá vault không được lưu; vault tự khoá theo idle và sleep, chưa phát hiện được khoá màn hình trên thực tế (`lock_on_screen_lock` có trong chính sách nhưng ne-platform chưa phát hiện sự kiện này); chính sách mặc định đặt thời gian dọn clipboard là 30 giây (việc giao diện thi hành đúng chính sách này chưa được kiểm chứng).
+Mô tả và giới hạn ở security-model mục 4.2, 4.3 và 6. Tóm tắt phần liên quan tới điểm vào: token phiên và khoá gốc nằm trong keychain nên T3 đọc được chúng; khoá vault không được lưu; vault tự khoá theo idle và sleep, chưa phát hiện được khoá màn hình trên thực tế (`lock_on_screen_lock` có trong chính sách nhưng ne-platform chưa phát hiện sự kiện này); chính sách mặc định đặt thời gian dọn clipboard là 30 giây (việc giao diện thi hành đúng chính sách này chưa được kiểm chứng).
 
 ## 4. Rủi ro đã chấp nhận
 
 | Rủi ro | Lý do chấp nhận |
 |---|---|
 | Bộ cài không ký, không công chứng | Quyết định không có chi phí cố định (ADR 0005). Giảm nhẹ bằng checksum, hướng dẫn mở lần đầu và đường tự biên dịch |
-| Không xoay khoá | Đổi mật khẩu bọc lại khoá gốc chứ không đổi nó; xoay khoá đòi mã hoá lại dữ liệu và chưa có (security-model mục 5). Khoá ký updater cũng không xoay được |
+| Không xoay khoá | Đổi mật khẩu bọc lại khoá gốc chứ không đổi nó; xoay khoá đòi mã hoá lại dữ liệu và chưa có (security-model mục 6). Khoá ký updater cũng không xoay được |
 | Mã độc cùng quyền người dùng (T3) | Không thể chống ở tầng ứng dụng; xem security-model 4.3 |
-| Siêu dữ liệu hiển thị với server | Id, kích thước, thời điểm, IP không được che (security-model mục 6) |
+| Siêu dữ liệu hiển thị với server | Id, kích thước, thời điểm, IP không được che (security-model mục 7) |
 | Server giữ, xoá hoặc trả log cũ | Mật mã ở đây chỉ phát hiện sửa nội dung từng update |
 | Không có bí mật về sau, không thu hồi khoá theo thiết bị | Một khoá workspace lộ mở được mọi update; thu hồi phiên chỉ chặn truy cập server |
 | Ghi chú và file đính kèm nằm **không mã hoá** trên đĩa của từng thiết bị | SQLite của app là bản dựng thông thường, không phải SQLCipher; bảo vệ khi máy tắt dựa vào mã hoá toàn đĩa của hệ điều hành. Riêng vault niêm phong từng mục kể cả khi lưu cục bộ |
@@ -132,7 +132,7 @@ Xếp theo mức độ ảnh hưởng. Mục nào xong thì chuyển vào [relea
 4. Đo Argon2id trên Windows và máy yếu, chốt tham số (ADR 0003).
 5. Đo CPU mỗi request, hibernation và hành vi chạm hạn mức trên Cloudflare thật (ADR 0004).
 6. Ghim các GitHub Action theo SHA commit; cân nhắc chứng thực nguồn gốc bản build và `cargo vet`.
-7. Quyết định và cài đặt đường cập nhật tự động nếu muốn có (khoá, `pubkey`, `latest.json`), cùng quy trình khi lộ khoá.
+7. ~~Quyết định và cài đặt đường cập nhật tự động~~ Đã có (mục 3.3). Còn thiếu: quy trình xử lý khi khoá riêng updater bị lộ.
 8. Bật xác thực hai yếu tố, bảo vệ tag `v*` và nhánh `main` trên GitHub; ghi lại cách kiểm tra.
 9. Phát hiện sự kiện khoá màn hình cho vault (cần mã nền tảng `unsafe` hiện bị cấm trong workspace, nên cần quyết định riêng).
 10. Fuzz bộ phân tích Markdown và CSV; thêm giới hạn tổng dung lượng khi nhập thư mục.

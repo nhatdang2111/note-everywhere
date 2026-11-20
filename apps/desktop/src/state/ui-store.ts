@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import type { NodeId } from "../api/contract.ts";
 import type { PageEditor } from "../editor/index.ts";
 import { readJson, writeJson } from "../lib/storage.ts";
 
@@ -9,7 +10,25 @@ export const SIDEBAR_DEFAULT = 280;
 
 const isWidth = (value: unknown): value is number => typeof value === "number" && value >= SIDEBAR_MIN && value <= SIDEBAR_MAX;
 
+/** A dialog any part of the app can ask the workspace to show. */
+export type DialogRequest =
+  | { kind: "import-structured"; parentId: NodeId | null }
+  | { kind: "template-gallery"; parentId: NodeId | null }
+  | { kind: "save-template"; pageId: NodeId }
+  | { kind: "reminder"; pageId: NodeId; databaseId?: NodeId; propertyId?: string };
+
+export type SidePanel = "history" | "reminders";
+
 export interface UiStore {
+  /** The dialog on top of the workspace, if any. */
+  dialog: () => DialogRequest | null;
+  openDialog(request: DialogRequest): void;
+  closeDialog(): void;
+  /** The panel at the right edge of the workspace. */
+  sidePanel: () => SidePanel | null;
+  /** Show a panel, or hide it when it is already the one showing. */
+  toggleSidePanel(panel: SidePanel): void;
+  closeSidePanel(): void;
   searchOpen: () => boolean;
   setSearchOpen(open: boolean): void;
   sidebarWidth: () => number;
@@ -34,7 +53,15 @@ export function createUiStore(): UiStore {
   const [activeEditor, setActiveEditor] = createSignal<PageEditor | null>(null);
   const [findRequest, setFindRequest] = createSignal(0);
   const [renamingId, setRenamingId] = createSignal<string | null>(null);
+  const [dialog, setDialog] = createSignal<DialogRequest | null>(null);
+  const [sidePanel, setSidePanel] = createSignal<SidePanel | null>(null);
   return {
+    dialog,
+    openDialog: setDialog,
+    closeDialog: () => setDialog(null),
+    sidePanel,
+    toggleSidePanel: (panel) => setSidePanel((current) => (current === panel ? null : panel)),
+    closeSidePanel: () => setSidePanel(null),
     searchOpen,
     setSearchOpen,
     sidebarWidth,

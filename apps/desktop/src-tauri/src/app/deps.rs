@@ -8,6 +8,7 @@ use ne_platform::secure_store::{CredentialError, SecretBackend};
 use zeroize::Zeroizing;
 
 use super::events::EventSink;
+use super::update::UpdateBackend;
 
 /// The system clipboard (text only).
 pub trait Clipboard: Send + Sync {
@@ -28,6 +29,26 @@ pub trait Hotkeys: Send + Sync {
     /// Replaces any previous registration. `Err` carries a reason that is safe
     /// to show.
     fn register(&self, accelerator: &str) -> Result<(), String>;
+}
+
+/// Whether the system lets the app show notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyPermission {
+    Granted,
+    Denied,
+    /// The person has not been asked yet.
+    Undetermined,
+}
+
+/// Native notifications.
+pub trait Notifier: Send + Sync {
+    /// The current permission; never prompts.
+    fn permission(&self) -> NotifyPermission;
+    /// Asks the system for permission (it may prompt) and returns the answer.
+    /// Blocking; `AppCore` calls it off the async threads.
+    fn request_permission(&self) -> NotifyPermission;
+    /// Shows one notification. `Err` carries a reason that is safe to log.
+    fn show(&self, title: &str, body: &str) -> Result<(), String>;
 }
 
 /// A secure store the core can hand to `ne-platform`.
@@ -57,6 +78,8 @@ pub struct Deps {
     pub clipboard: Arc<dyn Clipboard>,
     pub dialogs: Arc<dyn Dialogs>,
     pub hotkeys: Arc<dyn Hotkeys>,
+    pub notifier: Arc<dyn Notifier>,
+    pub updater: Arc<dyn UpdateBackend>,
     pub secrets: SharedBackend,
 }
 

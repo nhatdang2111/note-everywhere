@@ -40,6 +40,9 @@ pub struct PageSummary {
     pub attachments: Vec<String>,
     /// Number of words in the body (the page title is not part of the body).
     pub word_count: usize,
+    /// Ids of the shared documents the page shows through synced blocks,
+    /// sorted.
+    pub synced: Vec<String>,
 }
 
 /// Text of a block as search sees it. A text block yields its inline text with
@@ -154,6 +157,7 @@ pub fn summarize(blocks: &[Block]) -> PageSummary {
         word_count: word_count(&text),
         links: outgoing_links(blocks),
         attachments: attachment_hashes(blocks),
+        synced: crate::synced::sync_ids(blocks),
         block_texts,
         text,
     }

@@ -1,6 +1,7 @@
 import type { Node as PmNode } from "prosemirror-model";
 import type { EditorView, NodeView, NodeViewConstructor } from "prosemirror-view";
 import { DEFAULT_LABELS, type EditorHost, type EditorLabels } from "./host.ts";
+import { createSyncedView, type NestedEditorFactory } from "./synced-view.ts";
 
 type GetPos = () => number | undefined;
 
@@ -30,7 +31,7 @@ export interface NodeViews {
   refresh(): void;
 }
 
-export function createNodeViews(host: EditorHost): NodeViews {
+export function createNodeViews(host: EditorHost, createNested?: NestedEditorFactory): NodeViews {
   const labels: EditorLabels = { ...DEFAULT_LABELS, ...host.labels };
   const refreshers = new Set<() => void>();
 
@@ -205,6 +206,7 @@ export function createNodeViews(host: EditorHost): NodeViews {
 
   return {
     views: {
+      ...(createNested ? { synced_block: createSyncedView(host, labels, createNested, refreshers) } : {}),
       todo_item: todoItem,
       toggle,
       code_block: codeBlock,

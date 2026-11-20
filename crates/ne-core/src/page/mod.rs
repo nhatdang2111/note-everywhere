@@ -41,19 +41,24 @@
 //! compaction.
 
 mod extract;
+mod history;
 mod model;
 mod read;
 mod schema;
 mod write;
 
+use std::sync::Arc;
+
 use loro::{ExportMode, LoroDoc, LoroList, LoroMap, VersionVector};
 
 use crate::error::{Error, Result};
+use crate::tree::Clock;
 pub use crate::tree::ImportOutcome;
 pub use extract::{
     LinkKind, OutgoingLink, PageSummary, attachment_hashes, block_plain_text, outgoing_links,
     page_plain_text, summarize, word_count,
 };
+pub use history::{HISTORY_SESSION_GAP_SECS, HistoryReport, VersionInfo};
 pub use model::{
     ATTACHMENT_HASH_LEN, ATTACHMENT_SRC_PREFIX, Block, BlockKind, Inline, Marks, PAGE_HREF_PREFIX,
     Run, attachment_src, normalize_inline, page_href, parse_attachment_src, parse_page_href,
@@ -66,11 +71,24 @@ const ROOT_NAME: &str = "doc";
 /// use it for their own edits.
 pub const SKELETON_PEER_ID: u64 = 0x4e45_534b_454c_0000;
 
+/// Changes made less than this many seconds after the previous one by the same
+/// replica are stored as one change (Loro's default is 1000 seconds, far
+/// coarser than a history version). Not part of the document.
+const CHANGE_MERGE_SECS: i64 = 30;
+
+/// Makes the replica record when each change was made, in finer steps than
+/// Loro's default, so the history can tell sessions apart.
+fn enable_history_stamps(doc: &LoroDoc) {
+    doc.set_record_timestamp(true);
+    doc.set_change_merge_interval(CHANGE_MERGE_SECS);
+}
+
 /// Typed API over the CRDT document holding the content of one page.
 /// See the [module documentation](self) for the model.
 pub struct PageDoc {
     doc: LoroDoc,
     root: LoroMap,
+    clock: Option<Arc<dyn Clock>>,
 }
 
 impl PageDoc {
@@ -101,7 +119,12 @@ impl PageDoc {
         doc.commit();
         doc.set_peer_id(own_peer)?;
         write::configure_text_styles(&doc);
-        Ok(Self { doc, root })
+        enable_history_stamps(&doc);
+        Ok(Self {
+            doc,
+            root,
+            clock: None,
+        })
     }
 
     /// Loads a page from bytes produced by [`Self::export_snapshot`] or
@@ -111,8 +134,41 @@ impl PageDoc {
         let doc = LoroDoc::new();
         doc.import(bytes)?;
         write::configure_text_styles(&doc);
+        doc.set_record_timestamp(true);
         let root = doc.get_map(ROOT_NAME);
-        Ok(Self { doc, root })
+        Ok(Self {
+            doc,
+            root,
+            clock: None,
+        })
+    }
+
+    /// Makes this replica stamp its commits with `clock` instead of the system
+    /// time. The stamps drive the grouping of the page history, see
+    /// [`Self::history`]; tests and the store use it to be deterministic.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    /// Commits pending edits, stamped with the clock if one is set.
+    pub(crate) fn commit(&self) {
+        if let Some(clock) = &self.clock {
+            self.doc
+                .set_next_commit_timestamp(clock.now_ms().div_euclid(1000));
+        }
+        self.doc.commit();
+    }
+
+    /// Writes the role marker beside the page content (a root map `ne` with
+    /// `role`), which tells a device that receives the document for the first
+    /// time what it is. The editor binding never touches that root.
+    pub fn tag_role(&self, role: &str) -> Result<()> {
+        self.doc
+            .get_map(crate::roles::ROLE_ROOT)
+            .insert(crate::roles::KEY_ROLE, role)?;
+        self.commit();
+        Ok(())
     }
 
     /// Sets this replica's id. Do it before the first local edit.
@@ -209,10 +265,10 @@ impl PageDoc {
     /// Runs `edit` and returns its result together with the update bytes
     /// holding exactly the changes it made, ready to queue for sync.
     pub fn edit<R>(&self, edit: impl FnOnce(&Self) -> Result<R>) -> Result<(R, Vec<u8>)> {
-        self.doc.commit();
+        self.commit();
         let before = self.doc.oplog_vv();
         let result = edit(self);
-        self.doc.commit();
+        self.commit();
         let update = self.doc.export(ExportMode::updates(&before))?;
         result.map(|value| (value, update))
     }

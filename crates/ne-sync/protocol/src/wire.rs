@@ -54,6 +54,10 @@ pub struct AccountRecordWire {
     pub kdf_salt: String,
     pub kdf_params: KdfParamsWire,
     pub auth_verifier: String,
+    /// Verifier of the recovery auth key. Absent on accounts created before
+    /// recovery verification existed; those cannot be recovered through the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_verifier: Option<String>,
     pub root_key_by_password: String,
     pub root_key_by_recovery: String,
     pub workspace_key: String,
@@ -64,6 +68,10 @@ impl AccountRecordWire {
         self.kdf_params.is_sane()
             && is_b64_of_len(&self.kdf_salt, SALT_LEN)
             && is_b64_of_len(&self.auth_verifier, KEY_LEN)
+            && self
+                .recovery_verifier
+                .as_deref()
+                .is_none_or(|v| is_b64_of_len(v, KEY_LEN))
             && is_b64_of_len(&self.root_key_by_password, WRAPPED_KEY_LEN)
             && is_b64_of_len(&self.root_key_by_recovery, WRAPPED_KEY_LEN)
             && is_wrapped_key(&self.workspace_key)
@@ -112,6 +120,8 @@ pub struct RegisterRequest {
     pub username: String,
     pub device_label: String,
     pub auth_key: String,
+    /// Recovery auth key (`ne-crypto::recovery`); the server stores its verifier.
+    pub recovery_auth_key: String,
     pub record: AccountRecordWire,
 }
 
@@ -144,11 +154,42 @@ pub struct ChangePasswordRequest {
     pub record: AccountRecordWire,
 }
 
+/// Fetches the blobs a recovery key opens.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryLookupRequest {
+    pub username: String,
+}
+
+/// The wrapped keys the recovery key opens. Unknown names get random-looking
+/// blobs of the same shape, so the answer does not reveal whether the account exists.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecoveryLookupResponse {
+    pub root_key_by_recovery: String,
+    pub workspace_key: String,
+}
+
+/// Resets the password with proof of the recovery key. Only the new password
+/// material is taken from `record`; the server keeps the stored recovery blobs.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoverRequest {
+    pub username: String,
+    pub recovery_auth_key: String,
+    pub new_auth_key: String,
+    pub device_label: String,
+    pub record: AccountRecordWire,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
     pub label: String,
     pub created_at: u64,
+    /// Last activity, rounded to the server's touch interval. Equals
+    /// `created_at` until the session is first used.
+    #[serde(default)]
+    pub last_seen_at: u64,
     pub expires_at: u64,
     pub current: bool,
 }
@@ -184,6 +225,7 @@ pub mod codes {
     pub const LENGTH_REQUIRED: &str = "length_required";
     pub const QUOTA: &str = "quota_exceeded";
     pub const UNAVAILABLE: &str = "unavailable";
+    pub const RECOVERY_UNAVAILABLE: &str = "recovery_unavailable";
 }
 
 #[cfg(test)]
@@ -200,6 +242,7 @@ mod tests {
                 parallelism: 1,
             },
             auth_verifier: b64_encode(&[3; KEY_LEN]),
+            recovery_verifier: Some(b64_encode(&[4; KEY_LEN])),
             root_key_by_password: wrapped.clone(),
             root_key_by_recovery: wrapped.clone(),
             workspace_key: wrapped,
@@ -225,6 +268,20 @@ mod tests {
         let mut bad = record();
         bad.auth_verifier = "A".repeat(100_000);
         assert!(!bad.is_valid());
+        let mut bad = record();
+        bad.recovery_verifier = Some("short".into());
+        assert!(!bad.is_valid());
+    }
+
+    #[test]
+    fn a_record_without_a_recovery_verifier_is_still_valid() {
+        let mut legacy = record();
+        legacy.recovery_verifier = None;
+        assert!(legacy.is_valid());
+        let json = serde_json::to_string(&legacy).expect("json");
+        assert!(!json.contains("recovery_verifier"));
+        let back: AccountRecordWire = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back, legacy);
     }
 
     #[test]

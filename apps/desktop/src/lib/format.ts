@@ -25,3 +25,21 @@ export function formatBytes(bytes: number): string {
   while (value >= 1024 && unit < units.length - 1) (value /= 1024), (unit += 1);
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
 }
+
+/** A calendar day (`YYYY-MM-DD`, optionally with `THH:MM`) as local text; the wall-clock value has no time zone, so it is never shifted. */
+export function formatDay(text: string, withYear = true): string {
+  const [datePart = "", timePart] = text.split("T");
+  const [year = 1970, month = 1, day = 1] = datePart.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  const dayText = new Intl.DateTimeFormat(locale(), { day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}) }).format(date);
+  return timePart ? `${dayText} ${timePart}` : dayText;
+}
+
+export function formatDateValue(value: { start: string; end?: string }): string {
+  if (!value.end) return formatDay(value.start);
+  return `${formatDay(value.start, false)} → ${formatDay(value.end)}`;
+}
+
+export function formatNumber(value: number): string {
+  return new Intl.NumberFormat(locale(), { maximumFractionDigits: 10 }).format(value);
+}

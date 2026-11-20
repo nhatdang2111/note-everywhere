@@ -116,3 +116,91 @@ describe("choosing the implementation", () => {
     expect(titles).toEqual(expect.arrayContaining(["Welcome", "Projects", "Garden plan"]));
   });
 });
+
+describe("Tauri bridge: databases, templates, history, import, synced blocks, reminders, updates", () => {
+  const commands: [keyof typeof tauriApi, string][] = [
+    ["dbCreate", "db_create"],
+    ["dbSchema", "db_schema"],
+    ["dbQuery", "db_query"],
+    ["dbPropertyAdd", "db_property_add"],
+    ["dbPropertyRename", "db_property_rename"],
+    ["dbPropertyDelete", "db_property_delete"],
+    ["dbPropertyMove", "db_property_move"],
+    ["dbPropertyChangeType", "db_property_change_type"],
+    ["dbRelationAdd", "db_relation_add"],
+    ["dbOptionAdd", "db_option_add"],
+    ["dbOptionRename", "db_option_rename"],
+    ["dbOptionColor", "db_option_color"],
+    ["dbOptionDelete", "db_option_delete"],
+    ["dbOptionMove", "db_option_move"],
+    ["dbRowCreate", "db_row_create"],
+    ["dbCellSet", "db_cell_set"],
+    ["dbCardMove", "db_card_move"],
+    ["dbViewAdd", "db_view_add"],
+    ["dbViewSave", "db_view_save"],
+    ["dbViewDelete", "db_view_delete"],
+    ["dbViewMove", "db_view_move"],
+    ["templateList", "template_list"],
+    ["templateCreateFromPage", "template_create_from_page"],
+    ["templateCreateForDatabase", "template_create_for_database"],
+    ["templateRename", "template_rename"],
+    ["templateSetDefaults", "template_set_defaults"],
+    ["templateDelete", "template_delete"],
+    ["templateInstantiatePage", "template_instantiate_page"],
+    ["templateInstantiateRow", "template_instantiate_row"],
+    ["pageHistory", "page_history"],
+    ["pageVersionPreview", "page_version_preview"],
+    ["pageVersionRestore", "page_version_restore"],
+    ["importStructured", "import_structured"],
+    ["syncedCreate", "synced_create"],
+    ["syncedInsert", "synced_insert"],
+    ["syncedApplyUpdate", "synced_apply_update"],
+    ["syncedClose", "synced_close"],
+    ["syncedUnsync", "synced_unsync"],
+    ["syncedOccurrences", "synced_occurrences"],
+    ["syncedList", "synced_list"],
+    ["reminderAdd", "reminder_add"],
+    ["reminderList", "reminder_list"],
+    ["reminderSetDone", "reminder_set_done"],
+    ["reminderSnooze", "reminder_snooze"],
+    ["reminderReschedule", "reminder_reschedule"],
+    ["reminderSetNote", "reminder_set_note"],
+    ["reminderDelete", "reminder_delete"],
+    ["updateStatus", "update_status"],
+    ["updateCheck", "update_check"],
+    ["updateDownload", "update_download"],
+    ["updateInstall", "update_install"],
+  ];
+
+  it.each(commands)("%s calls %s with its arguments as they are", async (method, command) => {
+    invoke.mockResolvedValue(undefined);
+    const args = { id: "n1", extra: [1, 2] };
+    await (tauriApi[method] as (args: unknown) => Promise<unknown>)(args);
+    expect(invoke).toHaveBeenCalledWith(command, args);
+  });
+
+  it("returns the snapshot of a shared document as bytes", async () => {
+    invoke.mockResolvedValueOnce({ snapshot: [1, 2, 3] });
+    const opened = await tauriApi.syncedOpen({ syncId: "0@abc" });
+    expect(opened.snapshot).toBeInstanceOf(Uint8Array);
+    expect(invoke).toHaveBeenCalledWith("synced_open", { syncId: "0@abc" });
+  });
+
+  it("passes the new events through, decoding the bytes of a shared document's update", async () => {
+    let deliver: (message: { payload: unknown }) => void = () => {};
+    listen.mockImplementation((_name: string, handler: typeof deliver) => {
+      deliver = handler;
+      return Promise.resolve(() => {});
+    });
+    const seen: unknown[] = [];
+    await tauriEvents.on("reminder:due", (payload) => seen.push(payload));
+    deliver({ payload: { reminders: [], nativeShown: true } });
+    expect(seen).toEqual([{ reminders: [], nativeShown: true }]);
+    const updates: Uint8Array[] = [];
+    await tauriEvents.on("page:remote-update", (payload) => updates.push(payload.update));
+    deliver({ payload: { pageId: "0@abc", update: [9, 8] } });
+    expect([...(updates[0] ?? [])]).toEqual([9, 8]);
+    expect(listen).toHaveBeenCalledWith("reminder:due", expect.any(Function));
+  });
+});
+

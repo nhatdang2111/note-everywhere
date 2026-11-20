@@ -124,9 +124,9 @@ describe("slash menu", () => {
     return { ...page, list };
   };
 
-  it("lists all 15 block kinds when opened", async () => {
+  it("lists all 15 block kinds, a database and an existing synced block when opened", async () => {
     const { list } = await openMenu();
-    expect(within(list).getAllByRole("option")).toHaveLength(15);
+    expect(within(list).getAllByRole("option")).toHaveLength(17);
   });
 
   it("filters while typing and shows nothing-found text", async () => {

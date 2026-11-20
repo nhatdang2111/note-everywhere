@@ -6,10 +6,17 @@
 
 #![warn(missing_docs)]
 
+pub mod collation;
+pub mod database;
 pub mod error;
 pub mod ids;
+mod kv_doc;
 pub mod markdown;
 pub mod page;
+pub mod reminders;
+pub mod roles;
+pub mod synced;
+pub mod template;
 pub mod tree;
 
 pub use error::{Error, Result};

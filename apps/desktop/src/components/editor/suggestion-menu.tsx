@@ -5,6 +5,7 @@ import {
   applyPageSuggestion,
   attachmentSrc,
   insertChoice,
+  type BlockChoice,
   type PageEditor,
   type SuggestionState,
 } from "../../editor/index.ts";
@@ -23,6 +24,8 @@ export interface SuggestionMenuProps {
   /** Ask for a page in a dialog; resolves to null when cancelled. */
   requestPage(): Promise<{ id: string; title: string } | null>;
   registerKeys(handler: KeyHandler | null): void;
+  /** Choose an existing synced block to insert after the current block. */
+  onInsertSynced(): void;
 }
 
 interface Entry {
@@ -58,12 +61,25 @@ export function SuggestionMenu(props: SuggestionMenuProps): JSX.Element {
       deleteTrigger(match);
       const child = await app.guard(() => app.tree.create({ kind: "page", parentId: pageId }));
       if (child) insertChoice("child_page", { pageId: child, title: app.tree.title(child) })(view().state, view().dispatch);
+    } else if (id === "database") {
+      deleteTrigger(match);
+      const database = await app.guard(async () => {
+        const created = await app.core.api.dbCreate({ parentId: pageId });
+        await app.tree.refresh();
+        app.tree.setExpanded(pageId, true);
+        return created;
+      });
+      if (database) insertChoice("child_page", { pageId: database, title: app.tree.title(database) })(view().state, view().dispatch);
+    } else if (id === "synced_existing") {
+      deleteTrigger(match);
+      props.onInsertSynced();
+      return;
     } else if (id === "page_link") {
       deleteTrigger(match);
       const picked = await requestPage();
       if (picked) insertChoice("page_link", { pageId: picked.id, title: picked.title })(view().state, view().dispatch);
     } else {
-      applyBlockSuggestion(match, id)(view().state, view().dispatch, view());
+      applyBlockSuggestion(match, id as BlockChoice)(view().state, view().dispatch, view());
     }
     view().focus();
   };

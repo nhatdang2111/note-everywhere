@@ -16,11 +16,14 @@ export function Breadcrumb(): JSX.Element {
   const trail = () => {
     const pageId = app.tabs.activePageId();
     if (!pageId) return [];
-    return ancestors(app.tree.index(), pageId);
+    const index = app.tree.index();
+    const owner = index.byId.get(pageId) ? undefined : (app.tabs.activeDatabaseId() ?? app.rows.databaseOf(pageId));
+    const database = owner ? index.byId.get(owner) : undefined;
+    return database ? [...ancestors(index, database.id), database] : ancestors(index, pageId);
   };
   const current = () => {
     const target = app.tabs.target();
-    if (target.kind === "page") return app.tree.title(target.pageId) || t("tree.untitled");
+    if (target.kind === "page") return app.pageTitle(target.pageId) || t("tree.untitled");
     return t(TARGET_LABEL[target.kind] ?? "tabs.home");
   };
   return (
@@ -29,7 +32,7 @@ export function Breadcrumb(): JSX.Element {
         <For each={trail()}>
           {(node) => (
             <li>
-              <Show when={node.kind === "page"} fallback={<span class="crumb-static">{node.title || t("tree.untitled")}</span>}>
+              <Show when={node.kind !== "folder"} fallback={<span class="crumb-static">{node.title || t("tree.untitled")}</span>}>
                 <button type="button" class="crumb" onClick={() => app.openPage(node.id)}>
                   {node.title || t("tree.untitled")}
                 </button>

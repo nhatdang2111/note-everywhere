@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use ne_core::tree::NodeKind;
 use ne_crypto::keys::{SecretKey, WorkspaceKey};
 use ne_store::DocRef;
 use ne_sync::{
@@ -14,6 +13,7 @@ use ne_sync::{
 };
 use tokio::task::JoinHandle;
 
+use super::session::{page_family_snapshot, workspace_documents};
 use super::sync_store::{VAULT_DOC, WorkspaceStore, wire_id};
 use super::types::{SessionState, SyncState, SyncStatus};
 use super::{AppCore, AppError, AppResult, CoreEvent, lock};
@@ -288,16 +288,7 @@ impl AppCore {
             .runtime()
             .ok_or_else(|| AppError::new("not_signed_in", "Sync is not set up on this device."))?;
         let candidates = self.with_ws(|ws| {
-            let mut docs = vec![DocRef::Tree];
-            let mut stack = vec![None];
-            while let Some(parent) = stack.pop() {
-                for info in ws.tree().children(parent, true)? {
-                    stack.push(Some(info.id));
-                    if info.kind == NodeKind::Page {
-                        docs.push(DocRef::Page(info.id));
-                    }
-                }
-            }
+            let mut docs = workspace_documents(ws)?;
             docs.push(DocRef::Vault(VAULT_DOC.to_owned()));
             docs.retain(|doc| {
                 ws.update_log_size(doc)
@@ -315,11 +306,9 @@ impl AppCore {
                     ws.tree().export_snapshot().map_err(ne_store::Error::from)?,
                     ws.tree().version(),
                 )),
-                DocRef::Page(id) => {
-                    let snapshot = ws.page_snapshot(*id)?;
-                    let version = ws.open_page(*id)?.version();
-                    Ok((snapshot, version))
-                }
+                // Only a vault document needs its version afterwards; the
+                // store works the version of the others out when it compacts.
+                DocRef::Page(id) => Ok((page_family_snapshot(ws, *id)?, Vec::new())),
                 DocRef::Vault(_) => self.vault_snapshot(ws),
             })?;
             match runtime

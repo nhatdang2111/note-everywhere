@@ -1,6 +1,6 @@
 import { For, Show, createMemo, createSignal, createUniqueId, onCleanup, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { ApiError, NodeId } from "../../api/contract.ts";
+import type { ApiError, NodeId, SearchHit } from "../../api/contract.ts";
 import { toApiError } from "../../api/errors.ts";
 import { t } from "../../i18n/index.ts";
 import { splitHighlights } from "../../lib/highlight.ts";
@@ -19,6 +19,7 @@ interface PageEntry {
   breadcrumb: string[];
   snippet?: string;
   highlights?: [number, number][];
+  hit?: SearchHit;
 }
 interface CreateEntry {
   kind: "create";
@@ -91,6 +92,7 @@ export function SearchPalette(props: { onClose(): void }): JSX.Element {
           breadcrumb: hit.breadcrumb,
           snippet: hit.snippet,
           highlights: hit.highlights,
+          hit,
         })),
       );
       setError(null);
@@ -120,7 +122,8 @@ export function SearchPalette(props: { onClose(): void }): JSX.Element {
     if (!entry) return;
     if (entry.kind === "page") {
       props.onClose();
-      app.openPage(entry.pageId, inNewTab);
+      if (entry.hit) app.openSearchHit(entry.hit, inNewTab);
+      else app.openPage(entry.pageId, inNewTab);
       return;
     }
     const id = await app.guard(() => app.tree.create({ kind: "page", parentId: null, title: entry.title }));

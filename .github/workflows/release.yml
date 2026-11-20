@@ -9,9 +9,15 @@
 # Signing
 #   - macOS is ad-hoc signed only (no Apple Developer ID, no notarisation).
 #   - Windows installers are not code-signed.
-#   - Tauri updater artifacts (`*.sig`, `*.app.tar.gz`) are produced only when the
-#     repository secret TAURI_SIGNING_PRIVATE_KEY exists; without it the workflow
+#   - Signed updater artifacts (`*.app.tar.gz` + `.sig` for macOS, `*-setup.exe.sig`
+#     for Windows) and a `latest.json` that points at them are produced only when
+#     BOTH the repository secret TAURI_SIGNING_PRIVATE_KEY and the repository
+#     variable UPDATER_PUBLIC_KEY exist. The variable holds the contents of the
+#     `.pub` file; it is merged into the app's configuration for this build, so
+#     the app can verify what the secret key signed. Without them the workflow
 #     still succeeds and the job summary says updater artifacts were skipped.
+#     The update signature, not the OS, is what authenticates an update, because
+#     the installers themselves are unsigned.
 #
 # Status: this workflow has never been executed. Treat the first run as a dry run
 # (manual dispatch) and read docs/release-checklist.md before pushing a tag.
@@ -93,16 +99,20 @@ jobs:
             target_args: --target universal-apple-darwin
             bundles: app,dmg
             installer_glob: "*.dmg"
+            updater_package: "*.app.tar.gz"
           - platform: windows
             os: windows-latest
             rust_targets: ""
             target_args: ""
             bundles: nsis
             installer_glob: "*-setup.exe"
+            updater_package: "*-setup.exe"
     env:
       PLATFORM: ${{ matrix.platform }}
       # Only the boolean is exposed to the shell, never the key itself.
       HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      # The public half is not secret.
+      UPDATER_PUBLIC_KEY: ${{ vars.UPDATER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -146,13 +156,34 @@ jobs:
           set -euo pipefail
           if [ "$PLATFORM" = "macos" ]; then features="$MACOS_FEATURES"; else features="$WINDOWS_FEATURES"; fi
 
-          # Settings merged over tauri.conf.json for this run only.
-          node -e '
+          # Updater artifacts need the signing key AND the public key to bake in.
+          updater=false
+          if [ "$HAS_UPDATER_KEY" = "true" ] && [ -n "${UPDATER_PUBLIC_KEY// /}" ]; then
+            updater=true
+          elif [ "$HAS_UPDATER_KEY" = "true" ]; then
+            echo "::warning title=Updater artifacts skipped::TAURI_SIGNING_PRIVATE_KEY is set but the repository variable UPDATER_PUBLIC_KEY is not, so the app could not verify updates."
+          fi
+          echo "updater=$updater" >> "$GITHUB_OUTPUT"
+
+          # Settings merged over tauri.conf.json for this run only. The public key
+          # goes into plugins.updater, which the app reads at startup: a build
+          # without it reports updates as unavailable.
+          UPDATER_ENABLED="$updater" node -e '
             const fs = require("fs");
             const bundle = {};
+            const config = { bundle };
             if (process.env.PLATFORM === "macos") bundle.macOS = { signingIdentity: "-" };
-            if (process.env.HAS_UPDATER_KEY === "true") bundle.createUpdaterArtifacts = true;
-            fs.writeFileSync("apps/desktop/ci-bundle-config.json", JSON.stringify({ bundle }));
+            if (process.env.UPDATER_ENABLED === "true") {
+              const pubkey = process.env.UPDATER_PUBLIC_KEY.trim();
+              const text = Buffer.from(pubkey, "base64").toString("utf8");
+              if (!text.startsWith("untrusted comment:")) {
+                console.error("::error::UPDATER_PUBLIC_KEY is not the content of a Tauri .pub file");
+                process.exit(1);
+              }
+              bundle.createUpdaterArtifacts = true;
+              config.plugins = { updater: { pubkey } };
+            }
+            fs.writeFileSync("apps/desktop/ci-bundle-config.json", JSON.stringify(config));
           '
 
           args="--bundles $BUNDLES --config ci-bundle-config.json"
@@ -166,14 +197,14 @@ jobs:
             echo "- Tauri arguments: \`$args\`"
             echo "- Cargo features: \`${features:-default}\`"
             if [ "$PLATFORM" = "macos" ]; then echo "- macOS signing: ad-hoc only, not notarised"; fi
-            if [ "$HAS_UPDATER_KEY" = "true" ]; then
-              echo "- Updater artifacts: enabled (signing key secret found)"
+            if [ "$updater" = "true" ]; then
+              echo "- Updater artifacts: enabled (signing key secret and public key variable found)"
             else
-              echo "- Updater artifacts: **skipped**, secret \`TAURI_SIGNING_PRIVATE_KEY\` is not set"
+              echo "- Updater artifacts: **skipped**, the secret \`TAURI_SIGNING_PRIVATE_KEY\` and the variable \`UPDATER_PUBLIC_KEY\` must both be set"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$HAS_UPDATER_KEY" != "true" ]; then
-            echo "::notice title=Updater artifacts skipped::TAURI_SIGNING_PRIVATE_KEY is not set, so no updater signature files are produced."
+          if [ "$updater" != "true" ]; then
+            echo "::notice title=Updater artifacts skipped::The signing key secret or the public key variable is missing, so no updater signature files or latest.json are produced."
           fi
 
       - name: Build the desktop app
@@ -192,6 +223,8 @@ jobs:
       - name: Collect installers
         env:
           INSTALLER_GLOB: ${{ matrix.installer_glob }}
+          UPDATER_PACKAGE: ${{ matrix.updater_package }}
+          UPDATER_ENABLED: ${{ steps.plan.outputs.updater }}
         run: |
           set -euo pipefail
           mkdir -p release-files
@@ -205,9 +238,13 @@ jobs:
             echo "::error::no installer matching $INSTALLER_GLOB was produced"
             exit 1
           fi
-          if [ "$HAS_UPDATER_KEY" = "true" ] && ! compgen -G "release-files/*.sig" > /dev/null; then
-            echo "::error::updater signing key was provided but no .sig file was produced"
-            exit 1
+          if [ "$UPDATER_ENABLED" = "true" ]; then
+            for package in release-files/$UPDATER_PACKAGE; do
+              if [ ! -f "$package" ] || [ ! -f "$package.sig" ]; then
+                echo "::error::updater signing was enabled but $UPDATER_PACKAGE and its .sig were not both produced"
+                exit 1
+              fi
+            done
           fi
           ls -l release-files
 
@@ -229,6 +266,55 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
           path: release-files
+
+      - name: Assemble latest.json for the updater
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! compgen -G "release-files/*.sig" > /dev/null; then
+            echo "No updater signatures: latest.json is not produced." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The universal macOS package serves both Mac architectures. The
+          # file names are the ones the release will carry, so the URLs match.
+          node <<'NODE'
+          const fs = require("fs");
+          const dir = "release-files";
+          const files = fs.readdirSync(dir);
+          const find = (pattern, what) => {
+            const name = files.find((f) => pattern.test(f));
+            if (!name) throw new Error(`missing ${what}`);
+            return name;
+          };
+          const signature = (name) => {
+            const path = `${dir}/${name}.sig`;
+            if (!fs.existsSync(path)) throw new Error(`missing signature for ${name}`);
+            const text = fs.readFileSync(path, "utf8").trim();
+            if (!Buffer.from(text, "base64").toString("utf8").startsWith("untrusted comment:")) {
+              throw new Error(`${name}.sig is not a minisign signature`);
+            }
+            return text;
+          };
+          const { VERSION, REPO } = process.env;
+          const base = `https://github.com/${REPO}/releases/download/v${VERSION}`;
+          const entry = (name) => ({ signature: signature(name), url: `${base}/${encodeURIComponent(name)}` });
+          const mac = entry(find(/\.app\.tar\.gz$/, "the macOS update package"));
+          const windows = entry(find(/-setup\.exe$/, "the Windows installer"));
+          const manifest = {
+            version: VERSION,
+            notes: `https://github.com/${REPO}/releases/tag/v${VERSION}`,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              "darwin-aarch64": mac,
+              "darwin-x86_64": mac,
+              "windows-x86_64": windows,
+            },
+          };
+          fs.writeFileSync(`${dir}/latest.json`, JSON.stringify(manifest, null, 2) + "\n");
+          NODE
+          node -e 'const m = JSON.parse(require("fs").readFileSync("release-files/latest.json", "utf8")); console.log("latest.json for " + m.version + ": " + Object.keys(m.platforms).join(", "))' | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: SHA-256 of every artifact
         run: |

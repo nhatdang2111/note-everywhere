@@ -11,14 +11,17 @@
 //! later sign-in uploads everything again (importing known updates is a no-op
 //! on the receiving side).
 
+use ne_core::NodeId;
 use ne_core::tree::NodeKind;
-use ne_crypto::account::AccountRecord;
+use ne_crypto::account::{AccountError, AccountRecord};
 use ne_crypto::key_wrap::{WrapContext, unwrap_key};
 use ne_crypto::keys::{RootKey, SecretKey, WorkspaceKey};
 use ne_crypto::recovery::RecoveryKey;
 use ne_platform::secure_store::CredentialStore;
 use ne_store::{DocRef, Workspace};
-use ne_sync::{ClientConfig, SessionState as ClientSession, SessionToken, SyncClient, Unlocked};
+use ne_sync::{
+    ClientConfig, SessionState as ClientSession, SessionToken, SyncClient, SyncError, Unlocked,
+};
 use url::Url;
 
 use super::deps::SharedBackend;
@@ -60,7 +63,7 @@ fn require_text(value: &str, what: &str) -> AppResult<()> {
 }
 
 /// Every page node, trashed ones included.
-pub(crate) fn all_pages(ws: &Workspace) -> ne_store::Result<Vec<ne_core::NodeId>> {
+fn all_pages(ws: &Workspace) -> ne_store::Result<Vec<NodeId>> {
     let mut pages = Vec::new();
     let mut stack = vec![None];
     while let Some(parent) = stack.pop() {
@@ -72,6 +75,30 @@ pub(crate) fn all_pages(ws: &Workspace) -> ne_store::Result<Vec<ne_core::NodeId>
         }
     }
     Ok(pages)
+}
+
+/// Every document the server keeps for this workspace except the vault: the
+/// tree, every page node, then the documents that travel under a node-shaped
+/// id without being a page of the tree (databases, the template library, the
+/// reminders, synced blocks).
+pub(crate) fn workspace_documents(ws: &Workspace) -> ne_store::Result<Vec<DocRef>> {
+    let mut docs = vec![DocRef::Tree];
+    docs.extend(all_pages(ws)?.into_iter().map(DocRef::Page));
+    docs.extend(ws.synced_documents()?);
+    Ok(docs)
+}
+
+/// The full state of a `DocRef::Page` document, whatever it holds.
+pub(crate) fn page_family_snapshot(ws: &mut Workspace, id: NodeId) -> ne_store::Result<Vec<u8>> {
+    if ws
+        .tree()
+        .get(id)
+        .is_ok_and(|info| info.kind == NodeKind::Page)
+    {
+        ws.page_snapshot(id)
+    } else {
+        ws.document_snapshot(id)
+    }
 }
 
 impl AppCore {
@@ -183,6 +210,29 @@ impl AppCore {
         Ok(recovery)
     }
 
+    /// A device that already belongs to an account can only sign in to that
+    /// same account again.
+    fn check_account_matches(&self, url: &Url, username: &str) -> AppResult<()> {
+        if self.state() != SessionState::NeedsSignIn {
+            return Ok(());
+        }
+        let known = self.session_status_now();
+        let same = known
+            .server_url
+            .as_deref()
+            .is_some_and(|u| parse_server_url(u).is_ok_and(|k| &k == url))
+            && known.username.as_deref().map(str::to_lowercase)
+                == Some(username.trim().to_lowercase());
+        if same {
+            Ok(())
+        } else {
+            Err(AppError::new(
+                "account_mismatch",
+                "This device belongs to another account. Sign in with that account.",
+            ))
+        }
+    }
+
     pub async fn sign_in(&self, args: SignInArgs) -> AppResult<()> {
         let _gate = self.inner.session_gate.lock().await;
         if self.state() == SessionState::SignedIn {
@@ -194,21 +244,7 @@ impl AppCore {
         let url = parse_server_url(&args.server_url)?;
         require_text(&args.username, "The username")?;
         require_text(&args.password, "The password")?;
-        if self.state() == SessionState::NeedsSignIn {
-            let known = self.session_status_now();
-            let same = known
-                .server_url
-                .as_deref()
-                .is_some_and(|u| parse_server_url(u).is_ok_and(|k| k == url))
-                && known.username.as_deref().map(str::to_lowercase)
-                    == Some(args.username.trim().to_lowercase());
-            if !same {
-                return Err(AppError::new(
-                    "account_mismatch",
-                    "This device belongs to another account. Sign in with that account.",
-                ));
-            }
-        }
+        self.check_account_matches(&url, &args.username)?;
         let client = self.make_client(url, &args.device_label)?;
         let unlocked = client.login(&args.username, &args.password).await?;
         self.finish_sign_in(
@@ -221,12 +257,19 @@ impl AppCore {
         .await
     }
 
-    /// The server's password reset needs proof of the old password: it has no
-    /// way to check a recovery key, so a forgotten password cannot be reset
-    /// through it yet. The recovery key is still validated so the person gets
-    /// the right message for a typo.
+    /// Resets a forgotten password with the account recovery key and signs
+    /// this device in. The local data stays as it is; every other device is
+    /// signed out and needs the new password. The recovery key itself stays
+    /// valid (it is not rotated).
     pub async fn recover_account(&self, args: RecoverAccountArgs) -> AppResult<()> {
-        parse_server_url(&args.server_url)?;
+        let _gate = self.inner.session_gate.lock().await;
+        if self.state() == SessionState::SignedIn {
+            return Err(AppError::new(
+                "already_signed_in",
+                "This device is already signed in.",
+            ));
+        }
+        let url = parse_server_url(&args.server_url)?;
         require_text(&args.username, "The username")?;
         require_text(&args.new_password, "The new password")?;
         RecoveryKey::parse(&args.recovery_key).map_err(|_| {
@@ -235,10 +278,34 @@ impl AppCore {
                 "That recovery key is not valid. Check it for typing mistakes.",
             )
         })?;
-        Err(AppError::new(
-            "recovery_unavailable",
-            "This server cannot reset a password with a recovery key yet.",
-        ))
+        self.check_account_matches(&url, &args.username)?;
+        let client = self.make_client(url, &args.device_label)?;
+        let unlocked = client
+            .recover_account(&args.username, &args.recovery_key, &args.new_password)
+            .await
+            .map_err(|err| match err {
+                err if err.is_recovery_unavailable() => AppError::new(
+                    "recovery_unavailable",
+                    "This account was created before password recovery was supported. \
+                     Sign in with the password, or create a new account.",
+                ),
+                // A key that opens nothing, or a proof the server refused.
+                SyncError::Account(AccountError::WrongSecret) | SyncError::InvalidCredentials => {
+                    AppError::new(
+                        "wrong_recovery_key",
+                        "That recovery key does not match this account.",
+                    )
+                }
+                other => other.into(),
+            })?;
+        self.finish_sign_in(
+            client,
+            unlocked,
+            &args.server_url,
+            &args.username,
+            &args.device_label,
+        )
+        .await
     }
 
     async fn finish_sign_in(
@@ -328,7 +395,8 @@ impl AppCore {
     }
 
     /// Replaces the outbox with everything this device holds, for a workspace
-    /// that has so far lived only here.
+    /// that has so far lived only here. The cursor goes back to zero and every
+    /// document is queued explicitly: nothing relies on the store to do it.
     fn queue_full_upload(&self) -> AppResult<()> {
         self.with_ws(|ws| {
             loop {
@@ -340,11 +408,13 @@ impl AppCore {
                 ws.outbox_acknowledge(&ids)?;
             }
             ws.set_sync_cursor(&encode_cursor(0))?;
-            let tree = ws.tree().export_snapshot().map_err(ne_store::Error::from)?;
-            ws.outbox_enqueue(&DocRef::Tree, &tree)?;
-            for id in all_pages(ws)? {
-                let snapshot = ws.page_snapshot(id)?;
-                ws.outbox_enqueue(&DocRef::Page(id), &snapshot)?;
+            for doc in workspace_documents(ws)? {
+                let snapshot = match &doc {
+                    DocRef::Tree => ws.tree().export_snapshot().map_err(ne_store::Error::from)?,
+                    DocRef::Page(id) => page_family_snapshot(ws, *id)?,
+                    DocRef::Vault(_) => continue,
+                };
+                ws.outbox_enqueue(&doc, &snapshot)?;
             }
             if ws.vault_doc(VAULT_DOC)?.is_some() {
                 let snapshot = super::vault_persist::load_doc(ws)?
@@ -456,8 +526,7 @@ impl AppCore {
                 id: s.id,
                 device_label: s.label,
                 created_at: s.created_at,
-                // The server does not track activity; the sign-in time is the best answer.
-                last_seen_at: s.created_at,
+                last_seen_at: s.last_seen_at,
                 current: s.current,
             })
             .collect())

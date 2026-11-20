@@ -4,6 +4,7 @@ import "./styles/layout.css";
 import "./styles/components.css";
 import "./styles/screens.css";
 import "./styles/editor.css";
+import "./styles/database.css";
 import { render } from "solid-js/web";
 import { Bootstrap } from "./app.tsx";
 import { loadCore } from "./api/index.ts";

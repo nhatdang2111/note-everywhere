@@ -7,7 +7,8 @@ use std::sync::Mutex;
 
 use serde_json::{Value, json};
 
-use super::types::{SessionStatus, SyncStatus};
+use super::types::{ReminderEntryDto, SessionStatus, SyncStatus};
+use super::update::UpdateStatus;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
@@ -31,6 +32,21 @@ pub enum CoreEvent {
     VoiceHotkey {
         pressed: bool,
     },
+    DatabaseChanged {
+        database_id: String,
+        row_ids: Vec<String>,
+    },
+    RemindersChanged,
+    ReminderDue {
+        reminders: Vec<ReminderEntryDto>,
+        /// A native notification was shown for every one of them.
+        native_shown: bool,
+    },
+    UpdateStatus(UpdateStatus),
+    UpdateProgress {
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+    },
 }
 
 impl CoreEvent {
@@ -44,6 +60,11 @@ impl CoreEvent {
             Self::VaultState { .. } => "vault:state",
             Self::VoiceDownloadProgress { .. } => "voice:download-progress",
             Self::VoiceHotkey { .. } => "voice:hotkey",
+            Self::DatabaseChanged { .. } => "database:changed",
+            Self::RemindersChanged => "reminders:changed",
+            Self::ReminderDue { .. } => "reminder:due",
+            Self::UpdateStatus(_) => "update:status",
+            Self::UpdateProgress { .. } => "update:progress",
         }
     }
 
@@ -65,6 +86,20 @@ impl CoreEvent {
                 json!({ "name": name, "receivedBytes": received_bytes, "totalBytes": total_bytes })
             }
             Self::VoiceHotkey { pressed } => json!({ "pressed": pressed }),
+            Self::DatabaseChanged {
+                database_id,
+                row_ids,
+            } => json!({ "databaseId": database_id, "rowIds": row_ids }),
+            Self::RemindersChanged => json!({}),
+            Self::ReminderDue {
+                reminders,
+                native_shown,
+            } => json!({ "reminders": reminders, "nativeShown": native_shown }),
+            Self::UpdateStatus(status) => json!(status),
+            Self::UpdateProgress {
+                received_bytes,
+                total_bytes,
+            } => json!({ "receivedBytes": received_bytes, "totalBytes": total_bytes }),
         }
     }
 }

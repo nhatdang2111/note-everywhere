@@ -7,6 +7,7 @@ const DEFAULT_QUOTA: u64 = 8 * 1024 * 1024 * 1024;
 const DEFAULT_SESSION_DAYS: u64 = 30;
 const DEFAULT_FREE_ATTEMPTS: u32 = 5;
 const DEFAULT_LOCK_BASE_SECS: u64 = 30;
+const DEFAULT_TOUCH_SECS: u64 = 600;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -21,6 +22,8 @@ pub struct Config {
     pub free_attempts: u32,
     /// First lockout length; doubles with each further failure.
     pub lock_base_secs: u64,
+    /// A session's last activity is written at most this often.
+    pub touch_ms: u64,
     /// Enables the `/v1/_test/*` routes. Local development only.
     pub test_inspect: bool,
 }
@@ -57,6 +60,10 @@ impl Config {
             lock_base_secs: number::<u64>(env, "LOCKOUT_BASE_SECONDS")
                 .unwrap_or(DEFAULT_LOCK_BASE_SECS)
                 .clamp(1, 3600),
+            touch_ms: number::<u64>(env, "SESSION_TOUCH_SECONDS")
+                .unwrap_or(DEFAULT_TOUCH_SECS)
+                .min(86_400)
+                * 1000,
             test_inspect: read(env, "TEST_INSPECT").is_some_and(|v| v == "1"),
         }
     }

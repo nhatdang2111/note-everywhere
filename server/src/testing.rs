@@ -80,6 +80,29 @@ impl Workspace {
                     .execute("UPDATE updates SET at = 0 WHERE payload IS NULL", vec![])?;
                 Ok(no_content()?)
             }
+            (Method::Get, "parts") => {
+                let row = self.db.one(
+                    "SELECT COUNT(*), COALESCE(SUM(length(payload)), 0) FROM parts",
+                    vec![],
+                )?;
+                let (rows, bytes) = match row {
+                    Some(row) => (crate::db::int(&row, 0)?, crate::db::int(&row, 1)?),
+                    None => (0, 0),
+                };
+                Ok(json(
+                    200,
+                    &serde_json::json!({ "rows": rows, "bytes": bytes }),
+                )?)
+            }
+            (Method::Post, "strip-recovery") => {
+                self.strip_recovery_verifier()?;
+                Ok(no_content()?)
+            }
+            (Method::Post, "age-parts") => {
+                // Makes every staged part look older than the orphan limit.
+                self.db.execute("UPDATE parts SET at = 0", vec![])?;
+                Ok(no_content()?)
+            }
             _ => Err(ApiError::NotFound),
         }
     }

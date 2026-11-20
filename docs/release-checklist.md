@@ -15,6 +15,8 @@
 - [ ] Version khớp ở `tauri.conf.json`, `[workspace.package]` của `Cargo.toml`, `apps/desktop/package.json` và tag; `CHANGELOG.md` đã chuyển mục Unreleased sang version mới.
 - [ ] README, SECURITY.md, các tài liệu trong `docs/` khớp với mã tại commit này (đặc biệt phần "works today" và "in progress" của README).
 - [ ] Biến `MACOS_FEATURES` và `WINDOWS_FEATURES` ở đầu `release.yml` chỉ chứa feature có thật trong `apps/desktop/src-tauri/Cargo.toml`.
+- [ ] `cargo clippy -p note-everywhere-desktop --all-targets --features transcribe -- -D warnings` xanh trên macOS (CI chạy bước này riêng cho macOS).
+- [ ] `apps/desktop/src-tauri/tauri.conf.json` không chứa `plugins.updater` và `capabilities/default.json` chỉ cấp `core:event:default` (kiểm thử `updater_plugin` và `contract_conformance` bắt cả hai).
 
 ## 2. Thủ công (chưa ai làm)
 
@@ -35,7 +37,11 @@ Chưa có lần nào ứng dụng được mở và dùng trong cửa sổ thậ
 - [ ] Cài sạch trên máy chưa từng có app, mở lần đầu đúng như hướng dẫn trong README (macOS: Open Anyway và cách `xattr`; Windows: SmartScreen More info, Run anyway). Nếu hướng dẫn lệch với màn hình thật của phiên bản hệ điều hành hiện tại, sửa README.
 - [ ] Cài bản trước (hoặc một bản thử), tạo dữ liệu, cài bản mới đè lên: dữ liệu, đăng nhập và cài đặt còn nguyên.
 - [ ] Gỡ cài đặt: ghi lại cái gì còn lại trên máy (thư mục dữ liệu, mục keychain) và nói rõ trong tài liệu.
-- [ ] Nếu đã tích hợp updater: cập nhật từ bản cũ lên bản mới qua `latest.json`, và thử một chữ ký sai bị từ chối. Nếu chưa, ghi rõ trong ghi chú phát hành rằng cập nhật là thủ công.
+- [ ] Updater đã được tích hợp trong app; việc còn lại là thử bằng bản thật, và **chưa ai làm**. Cần hai bản phát hành đã Publish có khoá updater (ví dụ `v0.1.0` rồi `v0.1.1`, có thể là pre-release khoá riêng thử nghiệm không dùng cho bản chính thức): cài bản cũ, mở app, thấy bản mới được báo (kiểm khi khởi động và bấm kiểm tra), tải về thấy tiến độ, cài và khởi động lại, rồi kiểm dữ liệu, đăng nhập và cài đặt còn nguyên trên macOS và Windows.
+- [ ] URL `https://github.com/nhatdang2111/note-everywhere/releases/latest/download/latest.json` trả về đúng `latest.json` của bản Publish mới nhất (không phải draft, không phải pre-release).
+- [ ] Một gói bị từ chối: sửa một byte của file cập nhật trên bản thử (hoặc thay chữ ký bằng chữ ký của khoá khác) và xác nhận app báo chữ ký không hợp lệ và không cài gì. Các kiểm thử tự động (`updater_plugin`) chỉ chạy trên máy phát triển với server cục bộ.
+- [ ] Bản build không có khoá updater (build từ mã nguồn): màn hình cập nhật báo không khả dụng kèm lý do, không có yêu cầu mạng nào tới GitHub từ chức năng cập nhật.
+- [ ] Nhắc việc: tạo một nhắc việc vài phút sau, đóng cửa sổ, thấy thông báo hệ thống đúng lúc trên macOS thật và Windows thật (kiểm quyền thông báo trong cài đặt hệ thống; trên macOS thử cả khi người dùng tắt thông báo của app, vì lúc đó app không phát hiện được và vẫn báo là đã hiện), và giao diện không hiện thêm thông báo thứ hai.
 
 ### 2.3 Server trên Cloudflare thật
 
@@ -67,13 +73,15 @@ Mọi số đo hiện tại dùng giọng tổng hợp (ADR 0007).
 - [ ] Rà soát tài liệu và mã tìm đường dẫn tuyệt đối cục bộ, tên cá nhân ngoài phần giấy phép, và thông tin nội bộ.
 - [ ] Đo Argon2id trên Windows và máy yếu, chốt tham số (ADR 0003); nếu đổi, cập nhật `docs/security-model.md`.
 - [ ] Xác thực hai yếu tố cho tài khoản GitHub của maintainer, bảo vệ tag `v*` và nhánh `main`.
-- [ ] Hai secret `TAURI_SIGNING_PRIVATE_KEY` và `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` đã được đặt và khoá riêng đã sao lưu tách biệt, hoặc chủ động quyết định phát hành mà không có artifact updater.
+- [ ] Hai secret `TAURI_SIGNING_PRIVATE_KEY` và `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` và biến `UPDATER_PUBLIC_KEY` (nội dung file `.pub`) đã được đặt và khoá riêng đã sao lưu tách biệt, hoặc chủ động quyết định phát hành mà không có artifact updater (khi đó ghi rõ trong ghi chú phát hành rằng cập nhật là thủ công). Thiếu một trong ba thì workflow bỏ qua updater.
+- [ ] Hiểu rõ hệ quả: bộ cài không ký nên chữ ký updater là thứ duy nhất xác thực bản cập nhật; khoá riêng không nằm trên máy dùng chung hay trong log (deployment-guide mục 4).
 
 ## 3. Bản build
 
 - [ ] Chạy workflow Release bằng dispatch (dry run). Đây là lần đầu workflow được chạy, nên đọc kỹ log từng job và sửa workflow nếu cần trước khi gắn tag.
 - [ ] Job summary ghi đúng tham số build, đúng feature, và trạng thái updater (có hoặc bỏ qua).
-- [ ] Artifact có đủ: `.dmg` (macOS), `-setup.exe` (Windows), `SHA256SUMS.txt`; có `.sig` và `.app.tar.gz` khi có khoá.
+- [ ] Artifact có đủ: `.dmg` (macOS), `-setup.exe` (Windows), `SHA256SUMS.txt`; khi có khoá thì thêm `.app.tar.gz` (macOS), các file `.sig` và `latest.json`.
+- [ ] `latest.json`: version đúng, có `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`, mỗi mục có `signature` (nội dung file `.sig`) và `url` đúng tên asset trong draft; mở app build ra với khoá thử và kiểm nó chấp nhận chữ ký.
 - [ ] `SHA256SUMS.txt` khớp khi tải artifact về và kiểm lại bằng các lệnh trong README (macOS và PowerShell).
 - [ ] macOS: file chạy là universal (`lipo -archs` cho thấy cả `arm64` và `x86_64`), chữ ký ad-hoc có mặt (`codesign -dv`), và app mở được trên cả Mac Apple Silicon và Mac Intel nếu có.
 - [ ] Bản có feature `transcribe` mở được và không đòi thư viện thiếu trên máy sạch.

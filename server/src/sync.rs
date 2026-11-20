@@ -8,8 +8,8 @@
 //! every device convergent.
 
 use ne_sync_protocol::frame::{
-    ClientFrame, EntryKind, ErrorCode, LogEntry, ProtocolError, PushEntry, ServerFrame,
-    SnapshotOutcome,
+    ClientFrame, ClientId, EntryKind, ErrorCode, LargeKind, LogEntry, Manifest, ProtocolError,
+    PushEntry, ServerFrame, SnapshotOutcome,
 };
 use ne_sync_protocol::ids::is_valid_id;
 use ne_sync_protocol::limits::{MAX_FRAME_BYTES, MAX_PAGE_ENTRIES, MAX_PUSH_BYTES};
@@ -20,6 +20,7 @@ use worker::{
 
 use crate::db::{self, b, n, s, uint};
 use crate::http::{ApiError, ApiResult};
+use crate::sessions;
 use crate::workspace_do::Workspace;
 use worker::Date;
 
@@ -63,6 +64,7 @@ impl Workspace {
             return Err(ApiError::BadRequest);
         }
         let session = self.authenticate(req, now)?;
+        sessions::touch(&self.db, &session.id, now, self.cfg.touch_ms)?;
         let device = req
             .url()?
             .query_pairs()
@@ -167,6 +169,16 @@ impl Workspace {
                 req_id,
                 self.handle_snapshot(&conn, req_id, &client_id.0, &doc_id, upto, payload, now),
             ),
+            ClientFrame::Commit {
+                req_id,
+                client_id,
+                doc_id,
+                kind,
+                parts,
+            } => (
+                req_id,
+                self.handle_commit(&ws, &conn, req_id, &client_id, &doc_id, kind, parts, now),
+            ),
         };
         let reply = outcome.unwrap_or_else(|err| {
             console_error!("sync handler failed: {err}");
@@ -194,6 +206,7 @@ impl Workspace {
         entries: Vec<PushEntry>,
         now: u64,
     ) -> worker::Result<ServerFrame> {
+        sessions::touch(&self.db, &conn.session, now, self.cfg.touch_ms)?;
         let total: usize = entries.iter().map(|e| e.payload.len()).sum();
         if total > MAX_PUSH_BYTES {
             return Ok(ServerFrame::Error {
@@ -292,11 +305,12 @@ impl Workspace {
                 let entry = (|| {
                     Ok::<_, worker::Error>(LogEntry {
                         seq: uint(&row, 0)?,
-                        kind: if db::int(&row, 1)? == 1 {
-                            EntryKind::Snapshot
-                        } else {
-                            EntryKind::Update
-                        },
+                        kind: u8::try_from(db::int(&row, 1)?)
+                            .ok()
+                            .and_then(EntryKind::from_u8)
+                            .ok_or_else(|| {
+                                worker::Error::RustError("unexpected row kind".into())
+                            })?,
                         upto: uint(&row, 2)?,
                         doc_id: db::text(&row, 3)?,
                         device_id: db::text(&row, 4)?,
@@ -355,6 +369,133 @@ impl Workspace {
         payload: Vec<u8>,
         now: u64,
     ) -> worker::Result<ServerFrame> {
+        sessions::touch(&self.db, &conn.session, now, self.cfg.touch_ms)?;
+        self.store_snapshot(
+            conn,
+            req_id,
+            client_id,
+            doc_id,
+            upto,
+            EntryKind::Snapshot,
+            payload,
+            now,
+        )
+    }
+
+    /// Publishes an update or snapshot whose sealed parts were staged through
+    /// the parts endpoint. The log row holds only the manifest.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_commit(
+        &self,
+        origin: &WebSocket,
+        conn: &Conn,
+        req_id: u32,
+        client_id: &ClientId,
+        doc_id: &str,
+        kind: LargeKind,
+        parts: u16,
+        now: u64,
+    ) -> worker::Result<ServerFrame> {
+        sessions::touch(&self.db, &conn.session, now, self.cfg.touch_ms)?;
+        let retry = self
+            .db
+            .one(
+                "SELECT 1 FROM updates WHERE client_id = ?",
+                vec![b(&client_id.0)],
+            )?
+            .is_some();
+        if retry {
+            return Ok(match kind {
+                LargeKind::Update => ServerFrame::Ack {
+                    req_id,
+                    head: self.head()?,
+                    seqs: vec![0],
+                },
+                LargeKind::Snapshot { .. } => ServerFrame::SnapshotAck {
+                    req_id,
+                    outcome: SnapshotOutcome::Accepted { dropped: 0 },
+                },
+            });
+        }
+        // Never publish a row a receiver could not complete. A part missing
+        // here means the client has to upload it again.
+        if !self.parts_complete(&client_id.0, parts)? {
+            return Ok(ServerFrame::Error {
+                req_id,
+                code: ErrorCode::Unavailable,
+            });
+        }
+        let manifest = Manifest {
+            group: client_id.0,
+            parts,
+        }
+        .encode();
+        match kind {
+            LargeKind::Snapshot { upto } => self.store_snapshot(
+                conn,
+                req_id,
+                &client_id.0,
+                doc_id,
+                upto,
+                EntryKind::LargeSnapshot,
+                manifest,
+                now,
+            ),
+            LargeKind::Update => {
+                let row = self
+                    .db
+                    .query(
+                        "INSERT INTO updates (client_id, doc_id, device_id, kind, upto, payload, at)
+                         VALUES (?, ?, ?, 2, 0, ?, ?) RETURNING seq",
+                        vec![
+                            b(&client_id.0),
+                            s(doc_id),
+                            s(&conn.device),
+                            b(&manifest),
+                            n(now),
+                        ],
+                    )?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        worker::Error::RustError("commit insert returned no row".into())
+                    })?;
+                let seq = uint(&row, 0)?;
+                let head = self.head()?;
+                self.fan_out(
+                    origin,
+                    head,
+                    vec![LogEntry {
+                        seq,
+                        kind: EntryKind::LargeUpdate,
+                        upto: 0,
+                        doc_id: doc_id.to_owned(),
+                        device_id: conn.device.clone(),
+                        payload: manifest,
+                    }],
+                );
+                Ok(ServerFrame::Ack {
+                    req_id,
+                    head,
+                    seqs: vec![seq],
+                })
+            }
+        }
+    }
+
+    /// Stores a snapshot row (inline or large) and releases what it replaces.
+    #[allow(clippy::too_many_arguments)]
+    fn store_snapshot(
+        &self,
+        conn: &Conn,
+        req_id: u32,
+        client_id: &[u8; 16],
+        doc_id: &str,
+        upto: u64,
+        kind: EntryKind,
+        payload: Vec<u8>,
+        now: u64,
+    ) -> worker::Result<ServerFrame> {
         let outcome = |outcome| Ok(ServerFrame::SnapshotAck { req_id, outcome });
         // A retry of a snapshot that was stored already.
         if self
@@ -373,7 +514,8 @@ impl Workspace {
         let covered = self
             .db
             .one(
-                "SELECT COALESCE(MAX(upto), 0) FROM updates WHERE doc_id = ? AND kind = 1 AND payload IS NOT NULL",
+                "SELECT COALESCE(MAX(upto), 0) FROM updates
+                 WHERE doc_id = ? AND kind IN (1, 3) AND payload IS NOT NULL",
                 vec![s(doc_id)],
             )?
             .map_or(Ok(0), |row| uint(&row, 0))?;
@@ -384,11 +526,12 @@ impl Workspace {
             .db
             .query(
                 "INSERT INTO updates (client_id, doc_id, device_id, kind, upto, payload, at)
-                 VALUES (?, ?, ?, 1, ?, ?, ?) RETURNING seq",
+                 VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq",
                 vec![
                     b(client_id),
                     s(doc_id),
                     s(&conn.device),
+                    n(u64::from(kind.to_u8())),
                     n(upto),
                     b(&payload),
                     n(now),
@@ -399,16 +542,23 @@ impl Workspace {
             .ok_or_else(|| worker::Error::RustError("snapshot insert returned no row".into()))?;
         let snapshot_seq = uint(&row, 0)?;
         // The new snapshot replaces every older snapshot of the document and
-        // every update it covers.
+        // every update it covers. Parts of replaced large rows go with them.
+        self.db.execute(
+            "DELETE FROM parts WHERE grp IN (
+                SELECT client_id FROM updates
+                WHERE doc_id = ? AND payload IS NOT NULL AND kind IN (2, 3)
+                  AND seq <> ? AND (kind = 3 OR seq <= ?))",
+            vec![s(doc_id), n(snapshot_seq), n(upto)],
+        )?;
         let released = self.db.query(
             "UPDATE updates SET payload = NULL
-             WHERE doc_id = ? AND payload IS NOT NULL AND seq <> ? AND (kind = 1 OR seq <= ?)
+             WHERE doc_id = ? AND payload IS NOT NULL AND seq <> ? AND (kind IN (1, 3) OR seq <= ?)
              RETURNING kind",
             vec![s(doc_id), n(snapshot_seq), n(upto)],
         )?;
         let dropped = released
             .iter()
-            .filter(|row| db::int(row, 0).is_ok_and(|k| k == 0))
+            .filter(|row| db::int(row, 0).is_ok_and(|k| k == 0 || k == 2))
             .count();
         self.db.execute(
             "DELETE FROM updates WHERE seq IN (

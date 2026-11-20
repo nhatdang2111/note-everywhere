@@ -127,6 +127,9 @@ pub(crate) fn kind_from_node(
                 title: read_string(&attrs, "title"),
             }
         }
+        "synced_block" => BlockKind::SyncedBlock {
+            sync_id: read_string(&attrs()?, "syncId"),
+        },
         other => BlockKind::Unknown {
             node_name: other.to_owned(),
         },

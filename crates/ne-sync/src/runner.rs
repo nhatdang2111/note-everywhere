@@ -15,9 +15,13 @@ use futures_util::{SinkExt, StreamExt};
 use ne_crypto::aead;
 use ne_crypto::envelope::{open_update, seal_update};
 use ne_crypto::keys::WorkspaceKey;
-use ne_sync_protocol::limits::{MAX_FRAME_BYTES, MAX_PUSH_BYTES, MAX_PUSH_ENTRIES};
+use ne_sync_protocol::limits::{
+    MAX_FRAME_BYTES, MAX_LARGE_PLAINTEXT, MAX_PUSH_BYTES, MAX_PUSH_ENTRIES, MAX_SNAPSHOT_PAYLOAD,
+    MAX_UPDATE_PAYLOAD,
+};
 use ne_sync_protocol::{
-    ClientFrame, ClientId, EntryKind, ErrorCode, LogEntry, PushEntry, ServerFrame, SnapshotOutcome,
+    ClientFrame, ClientId, ErrorCode, LargeKind, LogEntry, Manifest, PushEntry, ServerFrame,
+    SnapshotOutcome,
 };
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -32,9 +36,12 @@ use tokio_tungstenite::{
 
 use crate::engine::EngineConfig;
 use crate::error::{Result, SyncError};
+use crate::parts::{self, PartClient};
 use crate::random;
 use crate::status::{SyncFailure, SyncStatus};
-use crate::store::{IncomingBatch, IncomingKind, IncomingUpdate, StoreError, SyncStore};
+use crate::store::{
+    IncomingBatch, IncomingKind, IncomingUpdate, OutboxItem, StoreError, SyncStore,
+};
 use crate::tls;
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -46,6 +53,11 @@ const PLAIN_UPDATE: u8 = 0;
 const PLAIN_SNAPSHOT: u8 = 1;
 /// Bytes sealing adds to an update: the kind byte plus the envelope.
 pub(crate) const SEAL_OVERHEAD: usize = 1 + aead::OVERHEAD;
+/// A received page is handed to the store in pieces of about this many
+/// plaintext bytes, so a page of large objects never sits in memory whole.
+const APPLY_CHUNK_BYTES: usize = 32 * 1024 * 1024;
+/// Tries per part download before the connection is given up on.
+const PART_FETCH_ATTEMPTS: u32 = 3;
 /// Close code the server uses when a session ends.
 const CLOSE_SESSION_ENDED: u16 = 4001;
 
@@ -118,6 +130,24 @@ pub(crate) struct Runner {
     inbox: mpsc::UnboundedReceiver<Command>,
     status: watch::Sender<SyncStatus>,
     tls: Arc<rustls::ClientConfig>,
+    parts: PartClient,
+}
+
+/// What a failed HTTP call means for the connection.
+fn http_failure(err: &SyncError) -> End {
+    match err {
+        SyncError::Unauthorized => End::Fatal(SyncFailure::Unauthorized),
+        SyncError::Network(_)
+        | SyncError::Unavailable
+        | SyncError::Offline
+        | SyncError::NotFound => End::Dropped,
+        _ => End::Fatal(SyncFailure::Protocol),
+    }
+}
+
+/// An update this big cannot be sealed into one row.
+fn is_large(item: &OutboxItem) -> bool {
+    item.update.len() + SEAL_OVERHEAD > MAX_UPDATE_PAYLOAD
 }
 
 fn storage(_: StoreError) -> End {
@@ -137,6 +167,7 @@ impl Runner {
         status: watch::Sender<SyncStatus>,
     ) -> Result<Self> {
         Ok(Self {
+            parts: PartClient::new(&cfg)?,
             cfg,
             key,
             store,
@@ -379,6 +410,11 @@ impl Runner {
         let mut plain = vec![PLAIN_SNAPSHOT];
         plain.extend_from_slice(&upto.to_be_bytes());
         plain.extend_from_slice(&state);
+        if plain.len() + aead::OVERHEAD > MAX_SNAPSHOT_PAYLOAD {
+            return self
+                .send_large_snapshot(link, doc_id, upto, plain, reply)
+                .await;
+        }
         let sealed = seal_update(
             &self.key,
             &self.cfg.workspace_id,
@@ -409,6 +445,102 @@ impl Runner {
             .map_err(|_| End::Dropped)
     }
 
+    /// A snapshot above the row limit: stage its parts, then publish.
+    async fn send_large_snapshot(
+        &self,
+        link: &mut Link,
+        doc_id: String,
+        upto: u64,
+        plain: Vec<u8>,
+        reply: oneshot::Sender<Result<SnapshotOutcome>>,
+    ) -> std::result::Result<(), End> {
+        if !parts::fits_parts(plain.len()) {
+            let _ = reply.send(Err(SyncError::TooLarge));
+            return Ok(());
+        }
+        // A fresh group per attempt: nothing of an earlier attempt is reused.
+        let group = random::client_id();
+        if let Err(end) = self.stage_parts(&group.0, &doc_id, &plain, false).await {
+            let _ = reply.send(Err(SyncError::Offline));
+            return Err(end);
+        }
+        link.last_rx = Instant::now();
+        let req_id = link.req();
+        let frame = ClientFrame::Commit {
+            req_id,
+            client_id: group,
+            doc_id,
+            kind: LargeKind::Snapshot { upto },
+            parts: u16::try_from(parts::part_count(plain.len()))
+                .map_err(|_| End::Fatal(SyncFailure::Protocol))?,
+        };
+        link.waiters.insert(req_id, reply);
+        self.send(link, frame).await
+    }
+
+    /// Uploads the parts of `plain` the server does not hold yet. With
+    /// `resume`, the server is asked which parts exist first.
+    async fn stage_parts(
+        &self,
+        group: &parts::Group,
+        doc_id: &str,
+        plain: &[u8],
+        resume: bool,
+    ) -> std::result::Result<(), End> {
+        let have = if resume {
+            self.parts.have(group).await.map_err(|e| http_failure(&e))?
+        } else {
+            Vec::new()
+        };
+        for index in (0..parts::part_count(plain.len())).filter(|i| !have.contains(i)) {
+            let sealed = parts::seal_part(
+                &self.key,
+                &self.cfg.workspace_id,
+                doc_id,
+                &self.cfg.device_id,
+                group,
+                plain,
+                index,
+            )
+            .map_err(|_| End::Fatal(SyncFailure::Protocol))?;
+            self.parts
+                .put(group, index, sealed)
+                .await
+                .map_err(|e| http_failure(&e))?;
+        }
+        Ok(())
+    }
+
+    /// Sends one update above the row limit on its own: parts first, then a
+    /// commit that the server accepts only if every part is there.
+    async fn push_large(&self, link: &mut Link, item: OutboxItem) -> std::result::Result<(), End> {
+        let mut plain = Vec::with_capacity(item.update.len() + 1);
+        plain.push(PLAIN_UPDATE);
+        plain.extend_from_slice(&item.update);
+        if !parts::fits_parts(plain.len()) {
+            return Err(End::Fatal(SyncFailure::Protocol));
+        }
+        // The group is the item's id, so a retry finds what an earlier try staged.
+        self.stage_parts(&item.client_id.0, &item.doc_id, &plain, true)
+            .await?;
+        link.last_rx = Instant::now();
+        let req_id = link.req();
+        let frame = ClientFrame::Commit {
+            req_id,
+            client_id: item.client_id,
+            doc_id: item.doc_id,
+            kind: LargeKind::Update,
+            parts: u16::try_from(parts::part_count(plain.len()))
+                .map_err(|_| End::Fatal(SyncFailure::Protocol))?,
+        };
+        self.send(link, frame).await?;
+        link.in_flight = Some(InFlight {
+            req_id,
+            ids: vec![item.client_id],
+        });
+        Ok(())
+    }
+
     async fn push(&self, link: &mut Link) -> std::result::Result<(), End> {
         let budget = MAX_PUSH_BYTES - MAX_PUSH_ENTRIES * SEAL_OVERHEAD;
         let batch = self
@@ -421,6 +553,13 @@ impl Runner {
         let mut entries = Vec::with_capacity(batch.len());
         let mut ids = Vec::with_capacity(batch.len());
         for item in batch {
+            if is_large(&item) {
+                if entries.is_empty() {
+                    return self.push_large(link, item).await;
+                }
+                // It goes out alone in the next round.
+                break;
+            }
             let mut plain = Vec::with_capacity(item.update.len() + 1);
             plain.push(PLAIN_UPDATE);
             plain.extend_from_slice(&item.update);
@@ -491,13 +630,9 @@ impl Runner {
                 if head < cursor {
                     return Err(End::Fatal(SyncFailure::ServerReset));
                 }
-                let updates = self.open_entries(entries, cursor)?;
-                self.store
-                    .apply_incoming(IncomingBatch {
-                        updates,
-                        cursor: next_cursor,
-                    })
-                    .map_err(storage)?;
+                self.apply_page(entries, cursor, next_cursor).await?;
+                // Fetching large objects can take long; the link was alive throughout.
+                link.last_rx = Instant::now();
                 if req_id != 0 && link.pull_req == Some(req_id) {
                     if done {
                         link.live = true;
@@ -561,51 +696,140 @@ impl Runner {
         }
     }
 
-    /// Decrypts a page. Rows at or before the cursor and rows this device
-    /// wrote are not applied; a row that fails authentication stops sync
-    /// rather than being skipped, since skipping would lose data silently.
-    fn open_entries(
+    /// Decrypts a page and hands it to the store. Rows at or before the
+    /// cursor and rows this device wrote are not applied; a row that fails
+    /// authentication stops sync rather than being skipped, since skipping
+    /// would lose data silently. Large objects are fetched and reassembled
+    /// here, so the store only ever sees complete updates. A page is applied in
+    /// pieces when it holds a lot of data; each piece moves the cursor to its
+    /// last row, which is sound because rows arrive in order.
+    async fn apply_page(
         &self,
         entries: Vec<LogEntry>,
         cursor: u64,
-    ) -> std::result::Result<Vec<IncomingUpdate>, End> {
-        let corrupt = || End::Fatal(SyncFailure::CorruptData);
+        next_cursor: u64,
+    ) -> std::result::Result<(), End> {
         let mut updates = Vec::new();
+        let mut bytes = 0usize;
         for entry in entries {
             if entry.seq <= cursor || entry.device_id == self.cfg.device_id {
                 continue;
             }
-            let plain = open_update(
+            let update = self.open_entry(entry).await?;
+            bytes += update.plaintext.len();
+            let seq = update.seq;
+            updates.push(update);
+            if bytes >= APPLY_CHUNK_BYTES {
+                self.store
+                    .apply_incoming(IncomingBatch {
+                        updates: std::mem::take(&mut updates),
+                        cursor: seq.min(next_cursor),
+                    })
+                    .map_err(storage)?;
+                bytes = 0;
+            }
+        }
+        self.store
+            .apply_incoming(IncomingBatch {
+                updates,
+                cursor: next_cursor,
+            })
+            .map_err(storage)
+    }
+
+    async fn open_entry(&self, entry: LogEntry) -> std::result::Result<IncomingUpdate, End> {
+        let corrupt = || End::Fatal(SyncFailure::CorruptData);
+        let mut plain = if entry.kind.is_large() {
+            self.fetch_large(&entry).await?
+        } else {
+            open_update(
                 &self.key,
                 &self.cfg.workspace_id,
                 &entry.doc_id,
                 &entry.device_id,
                 &entry.payload,
             )
-            .map_err(|_| corrupt())?;
-            // The first plaintext byte says what the row is. It is sealed, so
-            // the server cannot relabel an update as a snapshot or back.
-            let (tag, body) = plain.split_first().ok_or_else(corrupt)?;
-            let (kind, plaintext) = match (entry.kind, *tag) {
-                (EntryKind::Update, PLAIN_UPDATE) => (IncomingKind::Update, body.to_vec()),
-                (EntryKind::Snapshot, PLAIN_SNAPSHOT) => {
-                    let (head, state) = body.split_at_checked(8).ok_or_else(corrupt)?;
-                    let upto = u64::from_be_bytes(head.try_into().map_err(|_| corrupt())?);
-                    if upto != entry.upto {
-                        return Err(corrupt());
-                    }
-                    (IncomingKind::Snapshot { upto }, state.to_vec())
+            .map_err(|_| corrupt())?
+        };
+        // The first plaintext byte says what the row is. It is sealed, so
+        // the server cannot relabel an update as a snapshot or back.
+        let tag = *plain.first().ok_or_else(corrupt)?;
+        let kind = match (entry.kind.is_snapshot(), tag) {
+            (false, PLAIN_UPDATE) => {
+                plain.drain(..1);
+                IncomingKind::Update
+            }
+            (true, PLAIN_SNAPSHOT) => {
+                let head = plain.get(1..9).ok_or_else(corrupt)?;
+                let upto = u64::from_be_bytes(head.try_into().map_err(|_| corrupt())?);
+                if upto != entry.upto {
+                    return Err(corrupt());
                 }
-                _ => return Err(corrupt()),
-            };
-            updates.push(IncomingUpdate {
-                seq: entry.seq,
-                doc_id: entry.doc_id,
-                device_id: entry.device_id,
-                kind,
-                plaintext,
-            });
+                plain.drain(..9);
+                IncomingKind::Snapshot { upto }
+            }
+            _ => return Err(corrupt()),
+        };
+        Ok(IncomingUpdate {
+            seq: entry.seq,
+            doc_id: entry.doc_id,
+            device_id: entry.device_id,
+            kind,
+            plaintext: plain,
+        })
+    }
+
+    /// Downloads and reassembles the parts a manifest row points at.
+    async fn fetch_large(&self, entry: &LogEntry) -> std::result::Result<Vec<u8>, End> {
+        let corrupt = || End::Fatal(SyncFailure::CorruptData);
+        let manifest = Manifest::decode(&entry.payload).map_err(|_| corrupt())?;
+        let mut plain = Vec::new();
+        for index in 0..usize::from(manifest.parts) {
+            let sealed = self.fetch_part(&manifest.group, index).await?;
+            let part = parts::open_part(
+                &self.key,
+                &self.cfg.workspace_id,
+                &entry.doc_id,
+                &entry.device_id,
+                &sealed,
+            )
+            .ok_or_else(corrupt)?;
+            if part.group != manifest.group
+                || usize::from(part.index) != index
+                || part.count != manifest.parts
+            {
+                return Err(corrupt());
+            }
+            plain.extend_from_slice(&part.chunk);
+            if plain.len() > MAX_LARGE_PLAINTEXT + 16 {
+                return Err(corrupt());
+            }
         }
-        Ok(updates)
+        Ok(plain)
+    }
+
+    /// One part, retried a few times on network trouble. A part the server no
+    /// longer has means the row was compacted after this page was cut; the
+    /// connection restarts and the next pull brings the replacing snapshot.
+    async fn fetch_part(
+        &self,
+        group: &parts::Group,
+        index: usize,
+    ) -> std::result::Result<Vec<u8>, End> {
+        let mut attempt = 0;
+        loop {
+            match self.parts.get(group, index).await {
+                Ok(Some(sealed)) => return Ok(sealed),
+                Ok(None) => return Err(End::Dropped),
+                Err(err) => {
+                    let end = http_failure(&err);
+                    attempt += 1;
+                    if !matches!(end, End::Dropped) || attempt >= PART_FETCH_ATTEMPTS {
+                        return Err(end);
+                    }
+                    tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
+                }
+            }
+        }
     }
 }

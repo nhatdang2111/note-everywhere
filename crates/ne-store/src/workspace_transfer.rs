@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use ne_core::NodeId;
+use ne_core::database::DatabaseDoc;
 use ne_core::markdown::{
     Attachment, ExportReport, ImportReport, ImportSink, PageSource, export_tree, import_directory,
 };
@@ -187,7 +188,7 @@ impl Workspace {
             }
         };
         let imported = sink.pages;
-        match self.persist_import(imported) {
+        match self.persist_import(imported, Vec::new()) {
             Ok(()) => Ok(report),
             Err(err) => {
                 self.recover_tree();
@@ -196,7 +197,11 @@ impl Workspace {
         }
     }
 
-    fn persist_import(&mut self, imported: Vec<(NodeId, PageDoc)>) -> Result<()> {
+    pub(crate) fn persist_import(
+        &mut self,
+        imported: Vec<(NodeId, PageDoc)>,
+        databases: Vec<(NodeId, DatabaseDoc)>,
+    ) -> Result<()> {
         let now = self.now();
         let version = self.tree.version();
         let changed = self.tree.take_changes();
@@ -219,6 +224,20 @@ impl Workspace {
             )?;
             outbox::enqueue(&tx, &DocRef::Page(*id), &doc.export_all_updates()?, now)?;
         }
+        for (id, doc) in &databases {
+            doc.set_peer_id(self.peer_id)?;
+            let key = id.to_string();
+            docs::insert(
+                &tx,
+                &key,
+                DocKind::Page,
+                &doc.export_snapshot()?,
+                &doc.version(),
+                now,
+            )?;
+            docs::set_role(&tx, &key, ne_core::roles::Role::Database)?;
+            outbox::enqueue(&tx, &DocRef::Page(*id), &doc.export_all_updates()?, now)?;
+        }
         apply_tree_changes(
             &tx,
             &self.tree,
@@ -226,12 +245,22 @@ impl Workspace {
             self.peer_id,
             &changed,
             &[],
+            now,
         )?;
+        // The row nodes exist in the index by now, so the cell index and the
+        // search text of the rows can be built.
+        for (id, doc) in &databases {
+            crate::db_index::rebuild(&tx, *id, doc)?;
+        }
         maybe_compact(&tx, &self.config, TREE_DOC_ID, now, || {
             Ok((self.tree.export_snapshot()?, version.clone()))
         })?;
         tx.commit()?;
         self.tree_version = version;
+        for (id, doc) in databases {
+            doc.take_changes();
+            self.databases.insert(id, doc);
+        }
         Ok(())
     }
 
@@ -250,13 +279,40 @@ impl Workspace {
                 stack.push(Some(info.id));
                 match load_page(&tx, info.id, self.peer_id)? {
                     Some(doc) if info.kind == ne_core::tree::NodeKind::Page => {
-                        pages::index_page(&tx, info.id, &doc)?;
+                        pages::index_page(&tx, info.id, &doc, self.config.clock.now_ms())?;
                     }
                     _ => pages::reindex_title(&tx, info.id)?,
                 }
             }
         }
         tx.commit()?;
+        self.rebuild_database_indexes()
+    }
+
+    /// Recomputes the cell index of every database from its document.
+    fn rebuild_database_indexes(&mut self) -> Result<()> {
+        let mut ids = Vec::new();
+        let mut stack = vec![None];
+        while let Some(parent) = stack.pop() {
+            for info in self.tree.children(parent, true)? {
+                stack.push(Some(info.id));
+                if info.kind == ne_core::tree::NodeKind::Database {
+                    ids.push(info.id);
+                }
+            }
+        }
+        for id in ids {
+            // A database whose document has not arrived has nothing to index.
+            if self.load_database(id).is_err() {
+                continue;
+            }
+            let Some(doc) = self.databases.get(&id) else {
+                continue;
+            };
+            let tx = self.conn.transaction()?;
+            crate::db_index::rebuild(&tx, id, doc)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -312,6 +368,16 @@ impl Workspace {
             "SELECT n.id FROM nodes n WHERE n.rid IN (SELECT rowid FROM search) ORDER BY n.id",
         )?;
         dump("search_rows", "SELECT COUNT(*) FROM search")?;
+        dump(
+            "db_cells",
+            "SELECT db_id, prop_id, row_id, ord, num, txt, txt2, opt, hex(skey) FROM db_cells ORDER BY 1, 2, 3, 4",
+        )?;
+        dump(
+            "db_rows",
+            "SELECT row_id, db_id, vals, search_raw, search_norm FROM db_rows ORDER BY 1",
+        )?;
+        dump("db_links", "SELECT * FROM db_links ORDER BY 1, 2, 3")?;
+        dump("synced_refs", "SELECT * FROM synced_refs ORDER BY 1, 2")?;
         Ok(out)
     }
 }

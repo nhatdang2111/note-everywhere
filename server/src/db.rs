@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     token_hash BLOB NOT NULL UNIQUE,
     label TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS throttle (
     key TEXT PRIMARY KEY,
@@ -38,6 +39,13 @@ CREATE TABLE IF NOT EXISTS updates (
 );
 CREATE INDEX IF NOT EXISTS updates_doc ON updates (doc_id, seq);
 CREATE INDEX IF NOT EXISTS updates_tombstones ON updates (at) WHERE payload IS NULL;
+CREATE TABLE IF NOT EXISTS parts (
+    grp BLOB NOT NULL,
+    idx INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (grp, idx)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS blobs (
     hash TEXT PRIMARY KEY,
     size INTEGER NOT NULL,
@@ -47,7 +55,7 @@ CREATE TABLE IF NOT EXISTS blobs (
 ";
 
 /// Tables wiped by the test-only reset route.
-pub const TABLES: [&str; 5] = ["meta", "sessions", "throttle", "updates", "blobs"];
+pub const TABLES: [&str; 6] = ["meta", "sessions", "throttle", "updates", "parts", "blobs"];
 
 pub struct Db {
     sql: SqlStorage,
@@ -62,11 +70,29 @@ fn unexpected(what: &str) -> Error {
 impl Db {
     pub fn open(sql: SqlStorage) -> Result<Self> {
         sql.exec(SCHEMA, None)?;
-        Ok(Self {
+        let db = Self {
             sql,
             written: Cell::new(0),
             read: Cell::new(0),
-        })
+        };
+        db.migrate()?;
+        Ok(db)
+    }
+
+    /// Brings a database created by an older version up to the current schema.
+    fn migrate(&self) -> Result<()> {
+        let has_last_seen = self.one(
+            "SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'last_seen_at'",
+            vec![],
+        )?;
+        if has_last_seen.is_none() {
+            self.execute(
+                "ALTER TABLE sessions ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0",
+                vec![],
+            )?;
+        }
+        self.take_counters();
+        Ok(())
     }
 
     /// Runs a statement and collects every row.

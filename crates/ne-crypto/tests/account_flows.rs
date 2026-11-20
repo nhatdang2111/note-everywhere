@@ -3,16 +3,16 @@
 #![cfg(feature = "client")]
 
 use ne_crypto::account::{
-    AccountError, AccountRecord, VaultRecord, begin_login, change_password, change_vault_password,
-    create_account, create_vault, unlock_vault, unlock_vault_with_recovery_key,
-    unlock_with_password, unlock_with_recovery_key,
+    AccountError, AccountRecord, RecoveryRecord, VaultRecord, begin_login, change_password,
+    change_vault_password, create_account, create_vault, recover_account, unlock_vault,
+    unlock_vault_with_recovery_key, unlock_with_password, unlock_with_recovery_key,
 };
 use ne_crypto::auth;
 use ne_crypto::envelope::{open_update, seal_update};
 use ne_crypto::key_wrap::{WrapContext, unwrap_key};
 use ne_crypto::keys::{RootKey, SecretKey, VaultKey, WorkspaceKey, WrappingKey};
 use ne_crypto::password::{KdfError, KdfParams, KdfPolicy, derive_keys};
-use ne_crypto::recovery::RecoveryKey;
+use ne_crypto::recovery::{RecoveryKey, RecoveryKind};
 
 /// Small costs keep the suite fast.
 const FAST: KdfParams = KdfParams {
@@ -162,6 +162,137 @@ fn recovery_then_set_new_password() {
     assert!(unlock_with_password(b"fresh start", &changed.record, &POLICY).is_ok());
 }
 
+fn stored_of(record: &AccountRecord) -> RecoveryRecord {
+    RecoveryRecord {
+        root_key_by_recovery: record.root_key_by_recovery.clone(),
+        workspace_key: record.workspace_key.clone(),
+    }
+}
+
+#[test]
+fn recover_account_sets_a_new_password_and_keeps_data_keys() {
+    let created = create_account(PASSWORD, FAST, &POLICY).expect("create");
+    let sealed =
+        seal_update(&created.secrets.workspace_key, "ws", "doc", "dev", b"note").expect("seal");
+    let recovered = recover_account(
+        &created.recovery_key,
+        &stored_of(&created.record),
+        b"fresh start",
+        FAST,
+        &POLICY,
+    )
+    .expect("recover");
+
+    assert_eq!(recovered.secrets.root_key, created.secrets.root_key);
+    assert_eq!(
+        recovered.secrets.workspace_key,
+        created.secrets.workspace_key
+    );
+    assert_eq!(
+        open_update(
+            &recovered.secrets.workspace_key,
+            "ws",
+            "doc",
+            "dev",
+            &sealed
+        )
+        .expect("open"),
+        b"note"
+    );
+    // The new record logs in with the new password only, and the verifiers
+    // match the keys that were returned.
+    let record = &recovered.record;
+    assert!(unlock_with_password(b"fresh start", record, &POLICY).is_ok());
+    assert_eq!(
+        unlock_with_password(PASSWORD, record, &POLICY).err(),
+        Some(AccountError::WrongSecret)
+    );
+    assert!(auth::verify(
+        recovered.auth_key.as_bytes(),
+        &record.auth_verifier
+    ));
+    assert!(auth::verify(
+        recovered.recovery_auth_key.as_bytes(),
+        &created.record.recovery_verifier
+    ));
+    assert_eq!(record.recovery_verifier, created.record.recovery_verifier);
+    assert_ne!(record.kdf_salt, created.record.kdf_salt);
+    // The recovery key is not rotated: it still works afterwards.
+    assert!(unlock_with_recovery_key(&created.recovery_key, record).is_ok());
+}
+
+#[test]
+fn recover_account_rejects_wrong_keys_and_bad_passwords() {
+    let created = create_account(PASSWORD, FAST, &POLICY).expect("create");
+    let stored = stored_of(&created.record);
+    assert_eq!(
+        recover_account(&RecoveryKey::generate(), &stored, b"x", FAST, &POLICY).err(),
+        Some(AccountError::WrongSecret)
+    );
+    // The vault flavour of a recovery key must not unlock the account.
+    let other = create_account(PASSWORD, FAST, &POLICY).expect("create");
+    assert_eq!(
+        recover_account(&other.recovery_key, &stored, b"x", FAST, &POLICY).err(),
+        Some(AccountError::WrongSecret)
+    );
+    assert_eq!(
+        recover_account(&created.recovery_key, &stored, b"", FAST, &POLICY).err(),
+        Some(AccountError::EmptyPassword)
+    );
+    assert_eq!(
+        recover_account(
+            &created.recovery_key,
+            &stored,
+            b"x",
+            FAST,
+            &KdfPolicy::PRODUCTION
+        )
+        .err(),
+        Some(AccountError::Kdf(KdfError::OutOfPolicy))
+    );
+}
+
+#[test]
+fn recovery_auth_key_reveals_nothing_about_the_wrapping_key() {
+    let created = create_account(PASSWORD, FAST, &POLICY).expect("create");
+    let auth_key = created.recovery_key.auth_key(RecoveryKind::Account);
+    // Using the auth secret as a wrapping key does not open the root key.
+    let impostor = WrappingKey::from_bytes(auth_key.as_bytes());
+    assert!(
+        unwrap_key::<WrappingKey, RootKey>(
+            &impostor,
+            WrapContext::RootKeyByRecovery,
+            &created.record.root_key_by_recovery
+        )
+        .is_err()
+    );
+    assert!(created.record.supports_recovery());
+}
+
+#[test]
+fn records_without_a_recovery_verifier_deserialise_as_unrecoverable() {
+    let created = create_account(PASSWORD, FAST, &POLICY).expect("create");
+    let mut value = serde_json::to_value(&created.record).expect("serialise");
+    value
+        .as_object_mut()
+        .expect("object")
+        .remove("recovery_verifier");
+    let legacy: AccountRecord = serde_json::from_value(value).expect("legacy record");
+    assert!(!legacy.supports_recovery());
+    assert!(unlock_with_password(PASSWORD, &legacy, &POLICY).is_ok());
+}
+
+#[test]
+fn password_change_keeps_the_recovery_verifier() {
+    let created = create_account(PASSWORD, FAST, &POLICY).expect("create");
+    let changed =
+        change_password(&created.secrets, &created.record, b"new", FAST, &POLICY).expect("change");
+    assert_eq!(
+        changed.record.recovery_verifier,
+        created.record.recovery_verifier
+    );
+}
+
 #[test]
 fn kdf_policy_blocks_downgraded_or_oversized_records() {
     let created = create_account(PASSWORD, FAST, &POLICY).expect("create");
@@ -198,6 +329,7 @@ fn account_record_holds_only_serialisable_non_secret_fields() {
             "auth_verifier",
             "kdf_params",
             "kdf_salt",
+            "recovery_verifier",
             "root_key_by_password",
             "root_key_by_recovery",
             "workspace_key"
@@ -213,6 +345,14 @@ fn account_record_holds_only_serialisable_non_secret_fields() {
         b64(created.secrets.root_key.as_bytes()),
         b64(created.secrets.workspace_key.as_bytes()),
         b64(created.auth_key.as_bytes()),
+        b64(created
+            .recovery_key
+            .auth_key(RecoveryKind::Account)
+            .as_bytes()),
+        b64(created
+            .recovery_key
+            .wrapping_key(RecoveryKind::Account)
+            .as_bytes()),
     ] {
         assert!(!json.contains(&secret));
     }

@@ -11,9 +11,14 @@ import { IconButton } from "../common/button.tsx";
 import { ReauthDialog } from "../vault/vault-dialogs.tsx";
 import { VaultView } from "../vault/vault-view.tsx";
 import { RecordingIndicator, TalkButton } from "../voice/voice-controls.tsx";
+import { HistoryPanel } from "../history/history-panel.tsx";
+import { RemindersPanel } from "../reminders/reminders-panel.tsx";
+import { AppDialogs } from "./app-dialogs.tsx";
+import { PageActions } from "./page-actions.tsx";
 import { Breadcrumb } from "./breadcrumb.tsx";
 import { HomeView } from "./home-view.tsx";
 import { Sidebar } from "./sidebar.tsx";
+import { UpdateIndicator } from "./update-indicator.tsx";
 import { SyncIndicator } from "./sync-indicator.tsx";
 import { TabBar } from "./tab-bar.tsx";
 import { ThemeSwitch } from "./theme-switch.tsx";
@@ -65,8 +70,10 @@ function TopBar(): JSX.Element {
       <IconButton icon="arrow-right" label={t("shell.forward")} disabled={!tabs.canForward()} onClick={() => tabs.forward()} />
       <Breadcrumb />
       <div class="topbar-spacer" />
+      <PageActions />
       <RecordingIndicator />
       <TalkButton />
+      <UpdateIndicator />
       <SyncIndicator />
       <ThemeSwitch />
     </header>
@@ -131,7 +138,7 @@ export function Workspace(): JSX.Element {
             <Match when={pageId()}>
               {/* keyed: each page gets its own editor instance */}
               <Show when={pageId()} keyed>
-                {(id) => <PageView pageId={id} />}
+                {(id) => <PageView pageId={id} databaseId={app.tabs.activeDatabaseId()} />}
               </Show>
             </Match>
             <Match when={app.tabs.target().kind === "trash"}>
@@ -146,9 +153,16 @@ export function Workspace(): JSX.Element {
           </Switch>
         </main>
       </div>
+      <Show when={app.ui.sidePanel() === "history"}>
+        <HistoryPanel />
+      </Show>
+      <Show when={app.ui.sidePanel() === "reminders"}>
+        <RemindersPanel />
+      </Show>
       <Show when={app.ui.searchOpen()}>
         <SearchPalette onClose={() => app.ui.setSearchOpen(false)} />
       </Show>
+      <AppDialogs />
       <ReauthDialog />
       <ToastHost />
     </div>

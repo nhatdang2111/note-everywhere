@@ -51,7 +51,7 @@ pub(crate) struct SyncOutcome {
 }
 
 const COLUMNS: &str = "id, parent_id, position, kind, title, icon, favorite, created_at, \
-                       updated_at, trashed_at, hidden";
+                       updated_at, trashed_at, hidden, in_database";
 
 fn parse_id(text: &str) -> Result<NodeId> {
     text.parse()
@@ -71,6 +71,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<RawRow> {
         updated_at: row.get(8)?,
         trashed_at: row.get(9)?,
         hidden: row.get(10)?,
+        in_database: row.get(11)?,
     })
 }
 
@@ -86,6 +87,7 @@ struct RawRow {
     updated_at: i64,
     trashed_at: Option<i64>,
     hidden: bool,
+    in_database: bool,
 }
 
 impl RawRow {
@@ -94,11 +96,7 @@ impl RawRow {
             id: parse_id(&self.id)?,
             parent: self.parent.as_deref().map(parse_id).transpose()?,
             position: usize::try_from(self.position).unwrap_or_default(),
-            kind: if self.kind == "page" {
-                NodeKind::Page
-            } else {
-                NodeKind::Folder
-            },
+            kind: NodeKind::parse(&self.kind).unwrap_or(NodeKind::Folder),
             title: self.title,
             icon: self.icon,
             favorite: self.favorite,
@@ -110,8 +108,9 @@ impl RawRow {
     }
 
     /// True when every column except `hidden` already holds what the tree says.
-    fn matches(&self, info: &NodeInfo, position: usize) -> bool {
-        self.parent == info.parent.map(|p| p.to_string())
+    fn matches(&self, info: &NodeInfo, position: usize, in_database: bool) -> bool {
+        self.in_database == in_database
+            && self.parent == info.parent.map(|p| p.to_string())
             && usize::try_from(self.position).ok() == Some(position)
             && self.kind == kind_str(info.kind)
             && self.title == info.title
@@ -124,24 +123,29 @@ impl RawRow {
 }
 
 fn kind_str(kind: NodeKind) -> &'static str {
-    match kind {
-        NodeKind::Folder => "folder",
-        NodeKind::Page => "page",
-    }
+    kind.as_str()
+}
+
+/// True when the node is a row: a child of a database node.
+fn is_row(tree: &WorkspaceTree, info: &NodeInfo) -> bool {
+    info.parent
+        .and_then(|p| tree.get(p).ok())
+        .is_some_and(|parent| parent.kind == NodeKind::Database)
 }
 
 /// Inserts or updates the row of `info`, keeping its `rid` and `hidden`.
-fn upsert(conn: &Connection, info: &NodeInfo, position: usize) -> Result<()> {
+fn upsert(conn: &Connection, info: &NodeInfo, position: usize, in_database: bool) -> Result<()> {
     conn.prepare_cached(
         "INSERT INTO nodes (id, parent_id, position, kind, title, title_norm, icon, favorite,
-                            created_at, updated_at, trashed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?11, ?6, ?7, ?8, ?9, ?10)
+                            created_at, updated_at, trashed_at, title_key, in_database)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?11, ?6, ?7, ?8, ?9, ?10, ?12, ?13)
          ON CONFLICT(id) DO UPDATE SET
              parent_id = excluded.parent_id, position = excluded.position,
              kind = excluded.kind, title = excluded.title,
              title_norm = excluded.title_norm, icon = excluded.icon,
              favorite = excluded.favorite, created_at = excluded.created_at,
-             updated_at = excluded.updated_at, trashed_at = excluded.trashed_at",
+             updated_at = excluded.updated_at, trashed_at = excluded.trashed_at,
+             title_key = excluded.title_key, in_database = excluded.in_database",
     )?
     .execute(params![
         info.id.to_string(),
@@ -155,6 +159,8 @@ fn upsert(conn: &Connection, info: &NodeInfo, position: usize) -> Result<()> {
         info.updated_at,
         info.trashed_at,
         fold(&info.title),
+        ne_core::collation::sort_key(&info.title),
+        in_database,
     ])?;
     Ok(())
 }
@@ -260,8 +266,9 @@ pub(crate) fn sync(
         let existing = rows_under(conn, parent)?;
         for (position, info) in tree.children(parent, true)?.into_iter().enumerate() {
             let key = info.id.to_string();
+            let row = is_row(tree, &info);
             match existing.get(&key) {
-                Some(raw) if raw.matches(&info, position) => {}
+                Some(raw) if raw.matches(&info, position, row) => {}
                 Some(raw) => {
                     if raw.title != info.title {
                         outcome.reindex.push(info.id);
@@ -269,7 +276,7 @@ pub(crate) fn sync(
                     if raw.trashed_at != info.trashed_at {
                         structural.push((info.id, false));
                     }
-                    upsert(conn, &info, position)?;
+                    upsert(conn, &info, position, row)?;
                 }
                 None => {
                     // Absent under this parent: new, or moved here from elsewhere.
@@ -281,7 +288,7 @@ pub(crate) fn sync(
                         structural.push((info.id, true));
                     }
                     outcome.reindex.push(info.id);
-                    upsert(conn, &info, position)?;
+                    upsert(conn, &info, position, row)?;
                 }
             }
         }
@@ -316,7 +323,7 @@ pub(crate) fn rebuild(conn: &Connection, tree: &WorkspaceTree) -> Result<()> {
     let mut stack: Vec<(Option<NodeId>, bool)> = vec![(None, false)];
     while let Some((parent, parent_hidden)) = stack.pop() {
         for (position, info) in tree.children(parent, true)?.into_iter().enumerate() {
-            upsert(conn, &info, position)?;
+            upsert(conn, &info, position, is_row(tree, &info))?;
             let hidden = parent_hidden || info.trashed_at.is_some();
             set_hidden(conn, info.id, hidden)?;
             stack.push((Some(info.id), hidden));
@@ -326,10 +333,11 @@ pub(crate) fn rebuild(conn: &Connection, tree: &WorkspaceTree) -> Result<()> {
 }
 
 /// Every visible node, top level first and siblings in order, which is what
-/// the sidebar renders.
+/// the sidebar renders. Rows of a database are not part of it: they are shown
+/// by the database.
 pub(crate) fn sidebar(conn: &Connection) -> Result<Vec<NodeRow>> {
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT {COLUMNS} FROM nodes WHERE hidden = 0
+        "SELECT {COLUMNS} FROM nodes WHERE hidden = 0 AND in_database = 0
          ORDER BY parent_id IS NOT NULL, parent_id, position"
     ))?;
     let rows = statement.query_map([], read_row)?;
@@ -360,4 +368,18 @@ pub(crate) fn rid_of(conn: &Connection, id: NodeId) -> Result<Option<i64>> {
         .prepare_cached("SELECT rid FROM nodes WHERE id = ?1")?
         .query_row([id.to_string()], |row| row.get(0))
         .optional()?)
+}
+
+/// Computes the title sort key of nodes that were indexed before the key
+/// existed.
+pub(crate) fn backfill_title_keys(conn: &Connection) -> Result<()> {
+    let missing: Vec<(i64, String)> = conn
+        .prepare("SELECT rid, title FROM nodes WHERE title_key IS NULL")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut update = conn.prepare_cached("UPDATE nodes SET title_key = ?2 WHERE rid = ?1")?;
+    for (rid, title) in missing {
+        update.execute(params![rid, ne_core::collation::sort_key(&title)])?;
+    }
+    Ok(())
 }

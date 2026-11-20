@@ -19,6 +19,7 @@ function attach(parent: LoroList, name: string): LoroMap {
 /** A new page document with the root skeleton and one empty paragraph, as the core creates it. */
 export function createSkeleton(): LoroDoc {
   const doc = new LoroDoc();
+  doc.setRecordTimestamp(true);
   const root = doc.getMap("doc");
   root.set("nodeName", "doc");
   root.setContainer("attributes", new LoroMap());

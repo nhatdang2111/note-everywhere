@@ -3,6 +3,7 @@ import type { Command } from "prosemirror-state";
 import {
   TURN_INTO_CHOICES,
   canTurnInto,
+  containsSyncedBlock,
   deleteBlocks,
   duplicateBlocks,
   moveBlocksBy,
@@ -19,17 +20,30 @@ export interface BlockMenuProps {
   request: BlockMenuRequest;
   editor: PageEditor;
   onClose(): void;
+  /** Make the top-level blocks `start..end` a synced block. */
+  onCreateSynced?(start: number, end: number): void;
 }
 
 /** Actions for the selected blocks: turn into, duplicate, move, delete. */
 export function BlockMenu(props: BlockMenuProps): JSX.Element {
   const editor = props.editor;
+  // Read once: the menu closes before an entry runs, and the request goes away with it.
+  const { start, end } = props.request;
   const view = () => editor.view;
   const run = (command: Command) => () => {
     command(view().state, view().dispatch);
     view().focus();
   };
   const convertible = () => canTurnInto(view().state);
+  // The blocks the menu covers must not already hold a synced block (shared content does not nest).
+  const canShare = () => {
+    const { doc } = view().state;
+    for (let at = start; at <= end; at += 1) {
+      const block = doc.maybeChild(at);
+      if (!block || containsSyncedBlock(block)) return false;
+    }
+    return true;
+  };
 
   const entries = (): MenuEntry[] => {
     const turn: MenuEntry[] = TURN_INTO_CHOICES.map((choice: BlockChoice) => {
@@ -49,6 +63,11 @@ export function BlockMenu(props: BlockMenuProps): JSX.Element {
       { kind: "item", icon: "copy", label: t("blockMenu.duplicate"), onSelect: run(duplicateBlocks) },
       { kind: "item", icon: "arrow-up", label: t("blockMenu.moveUp"), onSelect: run(moveBlocksBy(-1)) },
       { kind: "item", icon: "arrow-down", label: t("blockMenu.moveDown"), onSelect: run(moveBlocksBy(1)) },
+      ...(props.onCreateSynced
+        ? [
+            { kind: "item" as const, icon: "sync" as const, label: t("blockMenu.createSynced"), disabled: !canShare(), onSelect: () => props.onCreateSynced?.(start, end) },
+          ]
+        : []),
       { kind: "separator" },
       { kind: "item", icon: "trash", danger: true, label: t("blockMenu.delete"), onSelect: run(deleteBlocks) },
     ];

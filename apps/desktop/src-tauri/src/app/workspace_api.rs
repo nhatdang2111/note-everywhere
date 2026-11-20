@@ -15,6 +15,7 @@ fn kind_of(kind: CoreKind) -> NodeKind {
     match kind {
         CoreKind::Folder => NodeKind::Folder,
         CoreKind::Page => NodeKind::Page,
+        CoreKind::Database => NodeKind::Database,
     }
 }
 
@@ -99,6 +100,7 @@ impl AppCore {
             match args.kind {
                 NodeKind::Folder => ws.create_folder(parent, place, &title),
                 NodeKind::Page => ws.create_page(parent, place, &title),
+                NodeKind::Database => ws.create_database(parent, place, &title),
             }
         })?;
         self.tree_changed(vec![id.to_string()]);
@@ -246,7 +248,7 @@ impl AppCore {
         self.store(|ws| {
             let mut hits = Vec::new();
             for hit in ws.search(text, limit)? {
-                if hit.kind != CoreKind::Page {
+                if hit.kind == CoreKind::Folder {
                     continue;
                 }
                 let breadcrumb = ws

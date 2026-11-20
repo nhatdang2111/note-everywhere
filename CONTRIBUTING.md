@@ -10,7 +10,7 @@ Security problems do not go in issues: see [SECURITY.md](SECURITY.md).
 - **No telemetry, ever.** No analytics, crash reporting, usage pings, update-check beacons or "anonymous" statistics. The only network traffic is to the sync server the user configures and to the model download the user asks for.
 - **Local-first and private by default.** Nothing leaves the device unencrypted. Do not add features that send plaintext notes, titles, keys or passwords anywhere.
 - **Synthetic data only.** Tests, fixtures, examples and screenshots must use invented data. Never commit real notes, real passwords or recovery keys, personal data or secrets (`.env` files, tokens, keys). Never commit absolute paths from your machine.
-- **Scope.** Mobile, web, Linux, multi-user features, sharing, comments and an AI assistant are out of scope (see [docs/product-spec.md](docs/product-spec.md), section 12).
+- **Scope.** Mobile, web, Linux, multi-user features, sharing, comments and an AI assistant are out of scope (see [docs/product-spec.md](docs/product-spec.md), section 13).
 
 ## Workflow
 

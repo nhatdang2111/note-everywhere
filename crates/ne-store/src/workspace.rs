@@ -4,8 +4,13 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
 use ne_core::NodeId;
+use ne_core::database::DatabaseDoc;
 use ne_core::page::{PageDoc, SKELETON_PEER_ID};
+use ne_core::reminders::RemindersDoc;
+use ne_core::template::LibraryDoc;
 use ne_core::tree::{Clock, NodeInfo, SystemClock, WorkspaceTree};
 use rusqlite::Connection;
 use uuid::Uuid;
@@ -83,6 +88,9 @@ pub struct Workspace {
     pub(crate) tree: WorkspaceTree,
     pub(crate) tree_version: Vec<u8>,
     pub(crate) pages: PageCache,
+    pub(crate) databases: HashMap<NodeId, DatabaseDoc>,
+    pub(crate) library: Option<LibraryDoc>,
+    pub(crate) reminders: Option<RemindersDoc>,
     pub(crate) peer_id: u64,
     pub(crate) config: StoreConfig,
 }
@@ -177,6 +185,7 @@ impl Workspace {
                 id
             }
         };
+        crate::nodes::backfill_title_keys(&conn)?;
         let (tree, version) = load_tree(&conn, config.clock.clone(), peer_id)?;
         Self::assemble(dir, conn, tree, version, peer_id, config)
     }
@@ -206,6 +215,9 @@ impl Workspace {
             tree,
             tree_version,
             pages,
+            databases: HashMap::new(),
+            library: None,
+            reminders: None,
             peer_id,
             config,
         })
@@ -343,7 +355,10 @@ impl Workspace {
         outbox::cursor(&self.conn)
     }
 
-    /// Stores the sync cursor.
+    /// Stores the sync cursor. This only moves the position: a caller that
+    /// seeds a server from this device (cursor zero) queues the state itself,
+    /// with [`Self::synced_documents`] and [`Self::document_snapshot`] for the
+    /// documents that are not pages of the tree.
     pub fn set_sync_cursor(&mut self, cursor: &[u8]) -> Result<()> {
         outbox::set_cursor(&self.conn, cursor)
     }

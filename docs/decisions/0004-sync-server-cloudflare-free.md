@@ -11,7 +11,7 @@ Mỗi người tự triển khai một Worker viết bằng Rust (`worker` 0.9) 
 - **Log là một bảng; snapshot là một dòng của chính bảng đó.** Mỗi dòng có số thứ tự toàn cục. Snapshot nhận một số thứ tự mới và, khi được nhận, các dòng cũ của tài liệu đó được thay bằng "bia mộ" (payload bị xoá, id giữ lại) để lần đẩy lại muộn vẫn bị nhận ra là trùng. Bia mộ được dọn sau 30 ngày. Quy tắc đầy đủ ở `docs/sync-protocol.md`.
 - **Id cập nhật do client sinh ngẫu nhiên (16 byte) thay cho bộ đếm theo thiết bị.** Bộ đếm cho phép khử trùng không tốn chỉ mục, nhưng nếu thiết bị khôi phục outbox từ bản sao lưu cũ thì các update mới bị coi là trùng và mất âm thầm. Id ngẫu nhiên không có kiểu hỏng đó; cái giá là một chỉ mục `UNIQUE` (thêm một dòng ghi mỗi update).
 - **Không dùng `AUTOINCREMENT`.** Nó ghi thêm một dòng vào `sqlite_sequence` mỗi lần chèn. Thay vào đó số thứ tự là `rowid`, và dòng có số lớn nhất không bao giờ bị xoá (việc dọn bia mộ loại nó ra), để số thứ tự không bao giờ được dùng lại.
-- **Snapshot nằm trong dòng SQLite**, tối đa 960 KiB, vừa một frame WebSocket và dưới giới hạn 2 MB mỗi dòng. Tài liệu có trạng thái lớn hơn mức đó chưa nén được log; chuyển snapshot sang R2 là việc có thể làm sau mà không đổi giao thức.
+- **Snapshot và update nhỏ nằm trong dòng SQLite.** Đối tượng lớn hơn một frame (tới 48 MiB) được chia thành các phần đã niêm phong riêng, mỗi phần tối đa 1 MiB, tải lên qua HTTP vào bảng tạm rồi được công bố bằng một dòng log duy nhất; bên nhận ghép đủ các phần rồi mới áp dụng. Quy tắc đầy đủ ở `docs/sync-protocol.md`.
 - **Giới hạn đăng nhập sai nằm trong object**, theo tên tài khoản và theo địa chỉ IP (`CF-Connecting-IP`), khoá tạm thời tăng gấp đôi sau mỗi lần sai kể từ lần thứ 5, tối đa một giờ. Tên không tồn tại có bộ đếm và salt giả ổn định như tên thật. Đánh đổi: kẻ tấn công biết tên tài khoản có thể khoá chủ tài khoản tối đa một giờ; chấp nhận vì tài khoản duy nhất và thời gian khoá bị chặn trên.
 - **`wrangler.toml` khai báo binding riêng cho từng môi trường** (`dev`, `production`), vì Wrangler không kế thừa binding giữa các môi trường. Tài liệu Cloudflare hiện mô tả trường `exports` sẽ thay mảng `migrations`; `migrations` vẫn chạy được với bản `wrangler@latest` dùng để kiểm thử, cần đối chiếu lại khi triển khai thật.
 
@@ -43,7 +43,7 @@ Các số dưới đây lấy từ `wrangler dev` trên máy phát triển bằn
 | Request Durable Object, đếm mọi message | 205 | 100.000 | 0,20% |
 | Request Durable Object, tỉ lệ 20:1 cho message | 86 | 100.000 | 0,09% |
 | Dòng ghi của Durable Object | 4.532 | 100.000 | 4,5% |
-| Dòng đọc của Durable Object | 7.593 | 5.000.000 | 0,15% |
+| Dòng đọc của Durable Object | 8.622 | 5.000.000 | 0,17% |
 
 Đây là số đếm do chính server ghi (`cursor.rowsWritten`, số request và message), không phải số hoá đơn của Cloudflare. **CPU mỗi request không đo được cục bộ**: `wrangler dev` không áp giới hạn 10 ms và thời gian trên máy phát triển không đại diện cho Cloudflare. Mã giữ mỗi request ở mức nhỏ (không băm payload, không giải mã, không quét bảng lớn; một lần đẩy là các `INSERT` đơn lẻ), nhưng chưa có số đo thật.
 

@@ -28,6 +28,17 @@ impl WorkspaceTree {
         self.create(NodeKind::Page, parent, position, title)
     }
 
+    /// Creates a database node under `parent` (`None` is the root) at
+    /// `position`. Its document is created separately, keyed by the id.
+    pub fn create_database(
+        &self,
+        parent: Option<NodeId>,
+        position: Position,
+        title: &str,
+    ) -> Result<NodeId> {
+        self.create(NodeKind::Database, parent, position, title)
+    }
+
     /// Changes a node's title.
     pub fn rename(&self, id: NodeId, title: &str) -> Result<()> {
         self.edit_meta(id, |meta| Ok(meta.insert(KEY_TITLE, title)?))
@@ -71,6 +82,7 @@ impl WorkspaceTree {
         let tid = self.require_visible(id)?;
         let parent = self.require_visible_parent(new_parent)?;
         if let Some(target) = new_parent {
+            self.require_row_parent(target, self.kind_of(tid))?;
             let target_tid = target.tree_id();
             if target_tid == tid || self.ancestor_chain(target_tid)?.contains(&tid) {
                 return Err(Error::MoveIntoDescendant {
@@ -107,7 +119,11 @@ impl WorkspaceTree {
         position: Position,
         title: &str,
     ) -> Result<NodeId> {
+        let parent_id = parent;
         let parent = self.require_visible_parent(parent)?;
+        if let Some(target) = parent_id {
+            self.require_row_parent(target, kind)?;
+        }
         let index = self.slot(parent, position, None)?;
         let tid = self.tree.create_at(parent, index)?;
         let now = self.now();
@@ -120,6 +136,15 @@ impl WorkspaceTree {
         });
         self.commit();
         result.map(|()| NodeId::from_tree_id(tid))
+    }
+
+    /// A database holds only pages (its rows); anything else is rejected.
+    fn require_row_parent(&self, parent: NodeId, child: NodeKind) -> Result<()> {
+        let is_database = self.kind_of(parent.tree_id()) == NodeKind::Database;
+        if is_database && child != NodeKind::Page {
+            return Err(Error::InvalidParent(parent));
+        }
+        Ok(())
     }
 
     /// Runs `edit` on the metadata of a visible node, bumps `updated_at`, and
@@ -146,6 +171,11 @@ impl WorkspaceTree {
             .into_iter()
             .filter(|&child| Some(child) != moving)
             .collect();
+        if position == Position::End {
+            // The common case, and the one a bulk import repeats thousands of
+            // times: no need to look at every sibling's trash state.
+            return Ok(siblings.len());
+        }
         let visible: Vec<usize> = siblings
             .iter()
             .enumerate()

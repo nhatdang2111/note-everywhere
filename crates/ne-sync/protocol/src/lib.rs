@@ -8,6 +8,6 @@ pub mod limits;
 pub mod wire;
 
 pub use frame::{
-    CLIENT_ID_LEN, ClientFrame, ClientId, EntryKind, ErrorCode, LogEntry, ProtocolError, PushEntry,
-    ServerFrame, SnapshotOutcome, VERSION,
+    CLIENT_ID_LEN, ClientFrame, ClientId, EntryKind, ErrorCode, LargeKind, LogEntry, Manifest,
+    ProtocolError, PushEntry, ServerFrame, SnapshotOutcome, VERSION,
 };

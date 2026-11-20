@@ -119,3 +119,92 @@ fn fts_and_wal_features_are_available_in_the_bundled_sqlite() {
         .expect("match");
     assert_eq!(hits, 1);
 }
+
+#[test]
+fn a_version_1_database_is_upgraded_keeping_its_nodes_and_gaining_the_new_tables() {
+    use std::sync::Arc;
+
+    use ne_core::tree::{Position, SystemClock, WorkspaceTree};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tree = WorkspaceTree::with_peer_id(7, Arc::new(SystemClock)).expect("tree");
+    let folder = tree
+        .create_folder(None, Position::End, "Dự án")
+        .expect("folder");
+    let page = tree
+        .create_page(Some(folder), Position::End, "Đường đi")
+        .expect("page");
+    {
+        let conn = Connection::open(dir.path().join(ne_store::DB_FILE)).expect("open");
+        conn.execute_batch(include_str!("../migrations/0001_init.sql"))
+            .expect("v1 schema");
+        conn.pragma_update(None, "user_version", 1)
+            .expect("version");
+        conn.execute(
+            "INSERT INTO docs (id, kind, snapshot, version, updated_at) VALUES ('tree', 'tree', ?1, ?2, 0)",
+            rusqlite::params![tree.export_snapshot().expect("snapshot"), tree.version()],
+        )
+        .expect("tree document");
+        for (rid, info) in [
+            (41_i64, tree.get(folder).expect("folder")),
+            (42, tree.get(page).expect("page")),
+        ] {
+            conn.execute(
+                "INSERT INTO nodes (rid, id, parent_id, position, kind, title, title_norm, favorite,
+                                    created_at, updated_at, hidden)
+                 VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, 0, 0, 0, 0)",
+                rusqlite::params![
+                    rid,
+                    info.id.to_string(),
+                    info.parent.map(|p| p.to_string()),
+                    if info.parent.is_some() { "page" } else { "folder" },
+                    info.title,
+                    ne_store::fold(&info.title),
+                ],
+            )
+            .expect("node row");
+        }
+    }
+    let mut ws = Workspace::open(dir.path(), config()).expect("open and upgrade");
+    assert_eq!(ws.schema_version().expect("version"), SCHEMA_VERSION);
+    let sidebar = ws.sidebar().expect("sidebar");
+    assert_eq!(
+        sidebar.iter().map(|n| n.title.as_str()).collect::<Vec<_>>(),
+        ["Dự án", "Đường đi"]
+    );
+    // The new kind and the new tables work on the upgraded file.
+    let db = ws
+        .create_database(None, Position::End, "Mới")
+        .expect("database");
+    assert!(ws.database_schema(db).is_ok());
+    ws.check_integrity().expect("sound");
+    drop(ws);
+    let conn = Connection::open(dir.path().join(ne_store::DB_FILE)).expect("open");
+    let rid: i64 = conn
+        .query_row(
+            "SELECT rid FROM nodes WHERE title = 'Đường đi'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("rid");
+    assert_eq!(rid, 42, "row ids are kept: the search index refers to them");
+    let missing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE title_key IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(missing, 0, "title sort keys are filled in on open");
+    let names = tables(&conn);
+    for expected in [
+        "db_cells",
+        "db_links",
+        "db_rows",
+        "reminder_state",
+        "synced_refs",
+        "synced_state",
+    ] {
+        assert!(names.iter().any(|n| n == expected), "{expected}: {names:?}");
+    }
+}

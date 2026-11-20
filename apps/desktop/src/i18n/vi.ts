@@ -1,7 +1,9 @@
 import type { MessageKey } from "./en.ts";
+import { viFeatures } from "./vi-features.ts";
 
 /** Vietnamese catalogue. Missing keys fall back to English. */
 export const vi: Partial<Record<MessageKey, string>> = {
+  ...viFeatures,
   // App and shell
   "app.name": "Note Everywhere",
   "app.loadErrorTitle": "Không khởi động được",

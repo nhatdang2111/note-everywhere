@@ -10,11 +10,11 @@ const ICONS: Record<string, IconName> = { home: "page", trash: "trash", vault: "
 
 export function TabBar(): JSX.Element {
   const app = useApp();
-  const { tabs, tree } = app;
+  const { tabs } = app;
 
   const label = (tab: Parameters<typeof currentTarget>[0]) => {
     const target = currentTarget(tab);
-    if (target.kind === "page") return tree.title(target.pageId) || t("tree.untitled");
+    if (target.kind === "page") return app.pageTitle(target.pageId) || t("tree.untitled");
     return t(LABELS[target.kind] ?? "tabs.home");
   };
 

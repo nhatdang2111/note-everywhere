@@ -24,10 +24,10 @@ use crate::tree::{NodeInfo, NodeKind, Position, WorkspaceTree};
 pub const ASSETS_DIR: &str = "assets";
 
 /// Deepest directory nesting an import follows.
-const MAX_IMPORT_DEPTH: usize = 64;
+pub(super) const MAX_IMPORT_DEPTH: usize = 64;
 
 /// Largest file an import reads (a page or an attachment), in bytes.
-const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A stored attachment as the exporter needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,7 +378,7 @@ fn scan(path: &Path, name: &str, depth: usize) -> Result<Option<Scanned>> {
     }))
 }
 
-fn normalize(path: &Path) -> PathBuf {
+pub(super) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
@@ -392,7 +392,7 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-fn percent_decode(text: &str) -> String {
+pub(super) fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

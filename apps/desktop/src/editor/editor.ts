@@ -6,7 +6,7 @@ import type { Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { bindingPlugins, createPageDoc, type PageDoc } from "./binding.ts";
 import { blockHandlePlugin, blockSelectionPlugin, extendBlockSelection, openBlockMenu, selectCurrentBlock } from "./block-handle.ts";
-import { createBlock } from "./blocks.ts";
+import { containsSyncedBlock, createBlock, insertSyncedBlock } from "./blocks.ts";
 import { toggleBold, toggleCode, toggleItalic, toggleStrike } from "./commands.ts";
 import { findPlugin } from "./find.ts";
 import { DEFAULT_LABELS, type EditorHost } from "./host.ts";
@@ -14,7 +14,7 @@ import { pageInputRules } from "./input-rules.ts";
 import { createRemoteCaret } from "./remote-caret.ts";
 import { looksLikeMarkdown, markdownToSlice } from "./markdown.ts";
 import { createNodeViews } from "./node-views.ts";
-import { parsePageHref } from "./page-links.ts";
+import { SYNCED_MIME, parseAttachmentSrc, parsePageHref, parseSyncedReference } from "./page-links.ts";
 import { pageSchema } from "./schema.ts";
 import { stashPlugin } from "./stash.ts";
 import { createSuggestionController } from "./suggestion.ts";
@@ -26,6 +26,8 @@ export interface PageEditor {
   doc: PageDoc;
   /** Re-read titles and states of page links after the tree changed. */
   refreshLinks(): void;
+  /** The editors inside the synced blocks of this page that are open right now. */
+  nestedEditors(): PageEditor[];
   /** Close an open slash or page menu without choosing anything. */
   dismissSuggestion(): void;
   /**
@@ -42,6 +44,11 @@ export interface PageEditorOptions {
   /** Called with Loro update bytes for every local edit; the IPC bridge hooks in here. */
   onLocalUpdate?: (update: Uint8Array) => void;
   host?: EditorHost;
+  /**
+   * The editor inside a synced block: it has no menus of its own and refuses
+   * content that would put one synced block inside another.
+   */
+  nested?: boolean;
 }
 
 const hardBreak = chainCommands(exitCode, (state, dispatch) => {
@@ -67,7 +74,19 @@ function imageFiles(data: DataTransfer | null): File[] {
   return [...(data?.files ?? [])].filter((file) => file.type.startsWith("image/"));
 }
 
-function interactionPlugin(host: EditorHost): Plugin {
+/** Reject any change that would put a synced block into a document that has none (shared content does not nest). */
+function noNestingPlugin(host: EditorHost): Plugin {
+  const message = host.labels?.syncedNoNesting ?? DEFAULT_LABELS.syncedNoNesting;
+  return new Plugin({
+    filterTransaction(tr, state) {
+      if (!tr.docChanged || containsSyncedBlock(state.doc) || !containsSyncedBlock(tr.doc)) return true;
+      host.onError?.(message);
+      return false;
+    },
+  });
+}
+
+function interactionPlugin(host: EditorHost, nested: boolean): Plugin {
   /** Store each image and put an image block after the block at `pos` (or the cursor). */
   const insertImages = async (view: EditorView, files: File[], pos?: number): Promise<void> => {
     if (!host.addImage) return;
@@ -86,6 +105,12 @@ function interactionPlugin(host: EditorHost): Plugin {
   return new Plugin({
     props: {
       handlePaste(view, event) {
+        const reference = parseSyncedReference(event.clipboardData?.getData(SYNCED_MIME) || event.clipboardData?.getData("text/plain") || "");
+        if (reference) {
+          if (nested) host.onError?.(host.labels?.syncedNoNesting ?? DEFAULT_LABELS.syncedNoNesting);
+          else insertSyncedBlock(reference)(view.state, view.dispatch);
+          return true;
+        }
         const files = imageFiles(event.clipboardData);
         if (files.length > 0 && host.addImage) {
           void insertImages(view, files);
@@ -119,6 +144,12 @@ function interactionPlugin(host: EditorHost): Plugin {
           if (host.resolvePage?.(pageId)?.state === "ok" || !host.resolvePage) host.openPage?.(pageId, modifier);
           return true;
         }
+        const attachment = parseAttachmentSrc(href);
+        if (attachment) {
+          event.preventDefault();
+          host.openAttachment?.(attachment);
+          return true;
+        }
         if (modifier) {
           event.preventDefault();
           host.openExternal?.(href);
@@ -146,7 +177,30 @@ export function createPageEditor(mount: HTMLElement, options: PageEditorOptions 
   const host = options.host ?? {};
   const doc = options.doc ?? createPageDoc();
   const unsubscribe = options.onLocalUpdate ? doc.subscribeLocalUpdates(options.onLocalUpdate) : undefined;
-  const nodeViews = createNodeViews(host);
+  const nested = options.nested === true;
+  // What a synced block's own editor may use of the surrounding application.
+  const nestedHost: EditorHost = {
+    ...host,
+    synced: undefined,
+    onSuggest: undefined,
+    onSuggestKey: undefined,
+    onBlockMenu: undefined,
+    onLinkShortcut: undefined,
+    onUpdate: undefined,
+    onSyncedMenu: undefined,
+  };
+  const inside = new Set<PageEditor>();
+  const createNested = (target: HTMLElement, sharedDoc: PageDoc): PageEditor => {
+    const created = createPageEditor(target, { doc: sharedDoc, host: nestedHost, nested: true });
+    inside.add(created);
+    const destroy = created.destroy;
+    created.destroy = () => {
+      inside.delete(created);
+      destroy();
+    };
+    return created;
+  };
+  const nodeViews = createNodeViews(host, nested ? undefined : createNested);
   const suggestions = createSuggestionController(host);
   const remoteCaret = createRemoteCaret();
 
@@ -180,7 +234,8 @@ export function createPageEditor(mount: HTMLElement, options: PageEditorOptions 
         findPlugin(),
         blockSelectionPlugin(),
         blockHandlePlugin(host),
-        interactionPlugin(host),
+        interactionPlugin(host, nested),
+        ...(nested ? [noNestingPlugin(host)] : []),
         editingKeymap,
         keymap(baseKeymap),
         new Plugin({
@@ -212,6 +267,7 @@ export function createPageEditor(mount: HTMLElement, options: PageEditorOptions 
   return {
     view,
     doc,
+    nestedEditors: () => [...inside],
     refreshLinks() {
       nodeViews.refresh();
       view.dispatch(view.state.tr.setMeta("ne-refresh", true));

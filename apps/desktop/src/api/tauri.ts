@@ -117,6 +117,75 @@ export const tauriApi: CoreApi = {
 
   settingsGet: command("settingsGet"),
   settingsSet: command("settingsSet"),
+
+  // Databases
+  dbCreate: command("dbCreate"),
+  dbSchema: command("dbSchema"),
+  dbQuery: command("dbQuery"),
+  dbPropertyAdd: command("dbPropertyAdd"),
+  dbPropertyRename: command("dbPropertyRename"),
+  dbPropertyDelete: command("dbPropertyDelete"),
+  dbPropertyMove: command("dbPropertyMove"),
+  dbPropertyChangeType: command("dbPropertyChangeType"),
+  dbRelationAdd: command("dbRelationAdd"),
+  dbOptionAdd: command("dbOptionAdd"),
+  dbOptionRename: command("dbOptionRename"),
+  dbOptionColor: command("dbOptionColor"),
+  dbOptionDelete: command("dbOptionDelete"),
+  dbOptionMove: command("dbOptionMove"),
+  dbRowCreate: command("dbRowCreate"),
+  dbCellSet: command("dbCellSet"),
+  dbCardMove: command("dbCardMove"),
+  dbViewAdd: command("dbViewAdd"),
+  dbViewSave: command("dbViewSave"),
+  dbViewDelete: command("dbViewDelete"),
+  dbViewMove: command("dbViewMove"),
+
+  // Templates
+  templateList: command("templateList"),
+  templateCreateFromPage: command("templateCreateFromPage"),
+  templateCreateForDatabase: command("templateCreateForDatabase"),
+  templateRename: command("templateRename"),
+  templateSetDefaults: command("templateSetDefaults"),
+  templateDelete: command("templateDelete"),
+  templateInstantiatePage: command("templateInstantiatePage"),
+  templateInstantiateRow: command("templateInstantiateRow"),
+
+  // Page history
+  pageHistory: command("pageHistory"),
+  pageVersionPreview: command("pageVersionPreview"),
+  pageVersionRestore: command("pageVersionRestore"),
+
+  // Structured import
+  importStructured: command("importStructured"),
+
+  // Synced blocks
+  async syncedOpen(args): Promise<OpenPage> {
+    const raw = (await call("synced_open", args)) as { snapshot: unknown };
+    return { snapshot: decodeBytes(raw.snapshot) };
+  },
+  syncedCreate: command("syncedCreate"),
+  syncedInsert: command("syncedInsert"),
+  syncedApplyUpdate: command("syncedApplyUpdate"),
+  syncedClose: command("syncedClose"),
+  syncedUnsync: command("syncedUnsync"),
+  syncedOccurrences: command("syncedOccurrences"),
+  syncedList: command("syncedList"),
+
+  // Reminders
+  reminderAdd: command("reminderAdd"),
+  reminderList: command("reminderList"),
+  reminderSetDone: command("reminderSetDone"),
+  reminderSnooze: command("reminderSnooze"),
+  reminderReschedule: command("reminderReschedule"),
+  reminderSetNote: command("reminderSetNote"),
+  reminderDelete: command("reminderDelete"),
+
+  // Updates
+  updateStatus: command("updateStatus"),
+  updateCheck: command("updateCheck"),
+  updateDownload: command("updateDownload"),
+  updateInstall: command("updateInstall"),
 };
 
 export const tauriEvents: CoreEvents = {

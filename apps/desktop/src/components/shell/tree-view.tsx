@@ -48,7 +48,7 @@ export function TreeView(): JSX.Element {
   };
 
   const activate = (row: TreeRow, inNewTab: boolean) => {
-    if (row.node.kind === "page") app.openPage(row.node.id, inNewTab);
+    if (row.node.kind !== "folder") app.openPage(row.node.id, inNewTab);
     else tree.setExpanded(row.node.id);
   };
 
@@ -209,7 +209,7 @@ export function TreeView(): JSX.Element {
                     draggable={!rename()}
                     onFocus={() => setFocusedId(id)}
                     onClick={(event) => activate(row(), event.metaKey || event.ctrlKey)}
-                    onAuxClick={(event) => event.button === 1 && row().node.kind === "page" && app.openPage(id, true)}
+                    onAuxClick={(event) => event.button === 1 && row().node.kind !== "folder" && app.openPage(id, true)}
                     onDblClick={() => ui.setRenamingId(id)}
                     onContextMenu={(event) => {
                       event.preventDefault();
@@ -242,7 +242,7 @@ export function TreeView(): JSX.Element {
                       <Icon name={row().expanded ? "chevron-down" : "chevron-right"} size={14} />
                     </button>
                     <span class="tree-icon">
-                      {row().node.icon ? <span aria-hidden="true">{row().node.icon}</span> : <Icon name={row().node.kind === "folder" ? "folder" : "page"} />}
+                      {row().node.icon ? <span aria-hidden="true">{row().node.icon}</span> : <Icon name={row().node.kind === "folder" ? "folder" : row().node.kind === "database" ? "database" : "page"} />}
                     </span>
                     <Show
                       when={!rename()}

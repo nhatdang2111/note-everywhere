@@ -1,5 +1,5 @@
 //! The Tauri side of the services `AppCore` needs: events, clipboard, native
-//! dialogs and the global hold-to-talk shortcut.
+//! dialogs, notifications, updates and the global hold-to-talk shortcut.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,8 +7,11 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::{NotificationExt, PermissionState};
 
-use crate::app::{Clipboard, CoreEvent, Dialogs, EventSink, Hotkeys};
+use crate::app::{
+    Clipboard, CoreEvent, Dialogs, EventSink, Hotkeys, Notifier, NotifyPermission, UpdateBackend,
+};
 
 pub struct TauriEvents(pub AppHandle);
 
@@ -83,5 +86,55 @@ impl Hotkeys for TauriHotkeys {
     #[cfg(not(desktop))]
     fn register(&self, _accelerator: &str) -> Result<(), String> {
         Err("global shortcuts are not available on this platform".into())
+    }
+}
+
+pub struct TauriNotifier(pub AppHandle);
+
+fn permission_of(state: PermissionState) -> NotifyPermission {
+    match state {
+        PermissionState::Granted => NotifyPermission::Granted,
+        PermissionState::Denied => NotifyPermission::Denied,
+        _ => NotifyPermission::Undetermined,
+    }
+}
+
+impl Notifier for TauriNotifier {
+    fn permission(&self) -> NotifyPermission {
+        self.0
+            .notification()
+            .permission_state()
+            .map_or(NotifyPermission::Denied, permission_of)
+    }
+
+    fn request_permission(&self) -> NotifyPermission {
+        self.0
+            .notification()
+            .request_permission()
+            .map_or(NotifyPermission::Denied, permission_of)
+    }
+
+    fn show(&self, title: &str, body: &str) -> Result<(), String> {
+        self.0
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|err| err.to_string())
+    }
+}
+
+/// The updater of this build: the Tauri plugin on desktop, and one that
+/// reports updates as unavailable where the plugin does not exist.
+pub fn updater_backend(app: &AppHandle, configured: bool) -> Arc<dyn UpdateBackend> {
+    #[cfg(desktop)]
+    {
+        Arc::new(crate::updater::TauriUpdater::new(app.clone(), configured))
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, configured);
+        Arc::new(crate::app::NoUpdates)
     }
 }

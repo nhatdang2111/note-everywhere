@@ -3,15 +3,21 @@ import { toApiError } from "../api/errors.ts";
 
 export type ToastKind = "info" | "success" | "error";
 
+export interface ToastAction {
+  label: string;
+  run(): void;
+}
+
 export interface Toast {
   id: number;
   kind: ToastKind;
   message: string;
+  action?: ToastAction;
 }
 
 export interface Toasts {
   items: () => Toast[];
-  push(kind: ToastKind, message: string, timeoutMs?: number): number;
+  push(kind: ToastKind, message: string, timeoutMs?: number, action?: ToastAction): number;
   /** Show a failed command's `ApiError.message`. */
   error(error: unknown): void;
   dismiss(id: number): void;
@@ -21,9 +27,9 @@ export function createToasts(): Toasts {
   const [items, setItems] = createSignal<Toast[]>([]);
   let next = 1;
   const dismiss = (id: number) => setItems((list) => list.filter((toast) => toast.id !== id));
-  const push = (kind: ToastKind, message: string, timeoutMs = kind === "error" ? 8000 : 4000): number => {
+  const push = (kind: ToastKind, message: string, timeoutMs = kind === "error" ? 8000 : 4000, action?: ToastAction): number => {
     const id = next++;
-    setItems((list) => [...list.slice(-3), { id, kind, message }]);
+    setItems((list) => [...list.slice(-3), { id, kind, message, ...(action ? { action } : {}) }]);
     if (timeoutMs > 0) setTimeout(() => dismiss(id), timeoutMs);
     return id;
   };

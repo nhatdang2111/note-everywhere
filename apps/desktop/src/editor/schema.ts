@@ -1,9 +1,10 @@
 import { Schema, type MarkSpec, type NodeSpec } from "prosemirror-model";
-import { parsePageHref } from "./page-links.ts";
+import { parseAttachmentSrc, parsePageHref } from "./page-links.ts";
 
 /**
  * Page schema: the 13 block kinds of the v1 spec (15 counting heading levels
- * 1-3 separately) plus the inline marks bold, italic, code, strike and link.
+ * 1-3 separately), the synced-block placeholder, and the inline marks bold,
+ * italic, code, strike and link.
  *
  * Node names are persisted in the Loro document (`nodeName`), so renaming one
  * is a data migration. Keep this file free of DOM and browser imports: the
@@ -177,6 +178,22 @@ const nodes: Record<string, NodeSpec> = {
     ],
   },
 
+  // Placeholder for content shared with other pages (docs/decisions/0008). The
+  // shared content is its own document, so the placeholder has no children.
+  synced_block: {
+    group: "block",
+    atom: true,
+    selectable: true,
+    attrs: { syncId: { default: "" } },
+    toDOM: (node) => ["div", { class: "ne-synced", "data-sync-id": node.attrs.syncId as string }],
+    parseDOM: [
+      {
+        tag: "div.ne-synced",
+        getAttrs: (dom) => ({ syncId: (dom as HTMLElement).dataset.syncId ?? "" }),
+      },
+    ],
+  },
+
   text: { group: "inline" },
 
   hard_break: {
@@ -199,7 +216,8 @@ const marks: Record<string, MarkSpec> = {
     inclusive: false,
     toDOM: (mark) => {
       const href = mark.attrs.href as string;
-      return parsePageHref(href) ? ["a", { href, class: "ne-inline-page" }, 0] : ["a", { href }, 0];
+      if (parsePageHref(href)) return ["a", { href, class: "ne-inline-page" }, 0];
+      return parseAttachmentSrc(href) ? ["a", { href, class: "ne-inline-attachment" }, 0] : ["a", { href }, 0];
     },
     parseDOM: [
       {

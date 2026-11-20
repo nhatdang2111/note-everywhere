@@ -11,7 +11,8 @@
 
 use crate::ids::is_valid_id;
 use crate::limits::{
-    MAX_FRAME_BYTES, MAX_PAGE_ENTRIES, MAX_PUSH_ENTRIES, MAX_SNAPSHOT_PAYLOAD, MAX_UPDATE_PAYLOAD,
+    MAX_FRAME_BYTES, MAX_PAGE_ENTRIES, MAX_PARTS, MAX_PUSH_ENTRIES, MAX_SNAPSHOT_PAYLOAD,
+    MAX_UPDATE_PAYLOAD,
 };
 
 /// Wire format version, the first byte of every frame.
@@ -22,6 +23,7 @@ pub const CLIENT_ID_LEN: usize = 16;
 const T_PUSH: u8 = 0x01;
 const T_PULL: u8 = 0x02;
 const T_SNAPSHOT: u8 = 0x03;
+const T_COMMIT: u8 = 0x04;
 const T_ACK: u8 = 0x81;
 const T_UPDATES: u8 = 0x82;
 const T_SNAPSHOT_ACK: u8 = 0x83;
@@ -67,6 +69,45 @@ pub struct PushEntry {
     pub payload: Vec<u8>,
 }
 
+/// Whether a committed large object is an update or a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LargeKind {
+    Update,
+    Snapshot { upto: u64 },
+}
+
+/// What the log row of a large object holds instead of a payload: where its
+/// parts are staged (the group is the row's `client_id`) and how many there are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Manifest {
+    pub group: [u8; CLIENT_ID_LEN],
+    pub parts: u16,
+}
+
+impl Manifest {
+    pub const LEN: usize = CLIENT_ID_LEN + 2;
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::LEN);
+        out.extend_from_slice(&self.group);
+        out.extend_from_slice(&self.parts.to_be_bytes());
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        let bytes: &[u8; Self::LEN] = bytes.try_into().map_err(|_| ProtocolError::InvalidValue)?;
+        let (group, parts) = bytes.split_at(CLIENT_ID_LEN);
+        let parts = u16::from_be_bytes([parts[0], parts[1]]);
+        if parts == 0 || usize::from(parts) > MAX_PARTS {
+            return Err(ProtocolError::InvalidValue);
+        }
+        Ok(Self {
+            group: group.try_into().map_err(|_| ProtocolError::InvalidValue)?,
+            parts,
+        })
+    }
+}
+
 /// Frames the client sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientFrame {
@@ -85,6 +126,18 @@ pub enum ClientFrame {
         upto: u64,
         payload: Vec<u8>,
     },
+    /// `req_id u32 | client_id 16 | doc id | kind u8 (0 update, 1 snapshot) |
+    /// upto u64 | parts u16`. Publishes an object whose `parts` sealed parts
+    /// were staged beforehand under the group `client_id`. The server stores
+    /// the row only if every part exists. The answer is an `Ack` (update) or a
+    /// `SnapshotAck` (snapshot), like the inline frames.
+    Commit {
+        req_id: u32,
+        client_id: ClientId,
+        doc_id: String,
+        kind: LargeKind,
+        parts: u16,
+    },
 }
 
 /// What a log row holds.
@@ -93,6 +146,39 @@ pub enum EntryKind {
     Update,
     /// Full document state covering every update of the document up to `upto`.
     Snapshot,
+    /// An update too big for a row; the payload is a [`Manifest`].
+    LargeUpdate,
+    /// A snapshot too big for a row; the payload is a [`Manifest`].
+    LargeSnapshot,
+}
+
+impl EntryKind {
+    pub fn is_snapshot(self) -> bool {
+        matches!(self, Self::Snapshot | Self::LargeSnapshot)
+    }
+
+    pub fn is_large(self) -> bool {
+        matches!(self, Self::LargeUpdate | Self::LargeSnapshot)
+    }
+
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::Update => 0,
+            Self::Snapshot => 1,
+            Self::LargeUpdate => 2,
+            Self::LargeSnapshot => 3,
+        }
+    }
+
+    pub fn from_u8(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::Update,
+            1 => Self::Snapshot,
+            2 => Self::LargeUpdate,
+            3 => Self::LargeSnapshot,
+            _ => return None,
+        })
+    }
 }
 
 /// One row of the log as delivered to a client.
@@ -335,6 +421,29 @@ impl ClientFrame {
                 w.blob(payload)?;
                 w.finish()
             }
+            Self::Commit {
+                req_id,
+                client_id,
+                doc_id,
+                kind,
+                parts,
+            } => {
+                if *parts == 0 || usize::from(*parts) > MAX_PARTS {
+                    return Err(ProtocolError::InvalidValue);
+                }
+                let mut w = Writer::new(T_COMMIT);
+                w.u32(*req_id);
+                w.0.extend_from_slice(&client_id.0);
+                w.id(doc_id)?;
+                let (tag, upto) = match kind {
+                    LargeKind::Update => (0, 0),
+                    LargeKind::Snapshot { upto } => (1, *upto),
+                };
+                w.u8(tag);
+                w.u64(upto);
+                w.u16(*parts);
+                w.finish()
+            }
         }
     }
 
@@ -382,6 +491,29 @@ impl ClientFrame {
                     payload,
                 }
             }
+            T_COMMIT => {
+                let req_id = r.u32()?;
+                let client_id = ClientId(r.array()?);
+                let doc_id = r.id()?;
+                let tag = r.u8()?;
+                let upto = r.u64()?;
+                let parts = r.u16()?;
+                if parts == 0 || usize::from(parts) > MAX_PARTS {
+                    return Err(ProtocolError::InvalidValue);
+                }
+                let kind = match (tag, upto) {
+                    (0, 0) => LargeKind::Update,
+                    (1, upto) => LargeKind::Snapshot { upto },
+                    _ => return Err(ProtocolError::InvalidValue),
+                };
+                Self::Commit {
+                    req_id,
+                    client_id,
+                    doc_id,
+                    kind,
+                    parts,
+                }
+            }
             other => return Err(ProtocolError::UnknownType(other)),
         };
         r.finish()?;
@@ -418,10 +550,7 @@ impl ServerFrame {
                 w.u16(entries.len() as u16);
                 for entry in entries {
                     w.u64(entry.seq);
-                    w.u8(match entry.kind {
-                        EntryKind::Update => 0,
-                        EntryKind::Snapshot => 1,
-                    });
+                    w.u8(entry.kind.to_u8());
                     w.u64(entry.upto);
                     w.id(&entry.doc_id)?;
                     w.id(&entry.device_id)?;
@@ -472,11 +601,7 @@ impl ServerFrame {
                 let mut entries = Vec::with_capacity(count);
                 for _ in 0..count {
                     let seq = r.u64()?;
-                    let kind = match r.u8()? {
-                        0 => EntryKind::Update,
-                        1 => EntryKind::Snapshot,
-                        _ => return Err(ProtocolError::InvalidValue),
-                    };
+                    let kind = EntryKind::from_u8(r.u8()?).ok_or(ProtocolError::InvalidValue)?;
                     let upto = r.u64()?;
                     let doc_id = r.id()?;
                     let device_id = r.id()?;
@@ -550,6 +675,20 @@ mod tests {
                 upto: 42,
                 payload: vec![9; 300],
             },
+            ClientFrame::Commit {
+                req_id: 10,
+                client_id: ClientId([4; CLIENT_ID_LEN]),
+                doc_id: "doc-10".into(),
+                kind: LargeKind::Update,
+                parts: 37,
+            },
+            ClientFrame::Commit {
+                req_id: 11,
+                client_id: ClientId([5; CLIENT_ID_LEN]),
+                doc_id: "doc-11".into(),
+                kind: LargeKind::Snapshot { upto: 99 },
+                parts: 1,
+            },
         ]
     }
 
@@ -563,8 +702,8 @@ mod tests {
             ServerFrame::Updates {
                 req_id: 0,
                 done: true,
-                next_cursor: 12,
-                head: 12,
+                next_cursor: 14,
+                head: 14,
                 entries: vec![
                     LogEntry {
                         seq: 11,
@@ -581,6 +720,26 @@ mod tests {
                         doc_id: "d".into(),
                         device_id: "dev".into(),
                         payload: vec![4; 10],
+                    },
+                    LogEntry {
+                        seq: 13,
+                        kind: EntryKind::LargeUpdate,
+                        upto: 0,
+                        doc_id: "d".into(),
+                        device_id: "dev".into(),
+                        payload: Manifest {
+                            group: [8; CLIENT_ID_LEN],
+                            parts: 3,
+                        }
+                        .encode(),
+                    },
+                    LogEntry {
+                        seq: 14,
+                        kind: EntryKind::LargeSnapshot,
+                        upto: 12,
+                        doc_id: "d".into(),
+                        device_id: "dev".into(),
+                        payload: vec![0; Manifest::LEN],
                     },
                 ],
             },
@@ -734,6 +893,77 @@ mod tests {
             ClientFrame::decode(&vec![1; MAX_FRAME_BYTES + 1]),
             Err(ProtocolError::TooLarge)
         );
+    }
+
+    #[test]
+    fn commit_validates_part_counts_and_kind() {
+        let commit = |parts| ClientFrame::Commit {
+            req_id: 1,
+            client_id: ClientId([1; CLIENT_ID_LEN]),
+            doc_id: "d".into(),
+            kind: LargeKind::Update,
+            parts,
+        };
+        assert_eq!(commit(0).encode(), Err(ProtocolError::InvalidValue));
+        assert_eq!(
+            commit(MAX_PARTS as u16 + 1).encode(),
+            Err(ProtocolError::InvalidValue)
+        );
+        assert!(commit(MAX_PARTS as u16).encode().is_ok());
+        // An update must not claim a covered position.
+        let mut bytes = commit(2).encode().expect("encode");
+        let at = bytes.len() - 2 - 8;
+        bytes[at..at + 8].copy_from_slice(&5u64.to_be_bytes());
+        assert_eq!(
+            ClientFrame::decode(&bytes),
+            Err(ProtocolError::InvalidValue)
+        );
+        // Unknown kind tag.
+        let mut bytes = commit(2).encode().expect("encode");
+        let at = bytes.len() - 2 - 8 - 1;
+        bytes[at] = 2;
+        assert_eq!(
+            ClientFrame::decode(&bytes),
+            Err(ProtocolError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn manifests_round_trip_and_reject_bad_sizes() {
+        let manifest = Manifest {
+            group: [3; CLIENT_ID_LEN],
+            parts: 40,
+        };
+        assert_eq!(Manifest::decode(&manifest.encode()), Ok(manifest));
+        assert!(Manifest::decode(&[0; Manifest::LEN - 1]).is_err());
+        assert!(Manifest::decode(&[0; Manifest::LEN + 1]).is_err());
+        // parts = 0
+        assert!(
+            Manifest::decode(
+                &[1; CLIENT_ID_LEN]
+                    .iter()
+                    .chain(&[0, 0])
+                    .copied()
+                    .collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+        // parts above the limit
+        let mut over = manifest.encode();
+        let n = (MAX_PARTS as u16 + 1).to_be_bytes();
+        over[CLIENT_ID_LEN..].copy_from_slice(&n);
+        assert!(Manifest::decode(&over).is_err());
+    }
+
+    #[test]
+    fn entry_kinds_map_to_wire_values() {
+        for value in 0..=3u8 {
+            let kind = EntryKind::from_u8(value).expect("kind");
+            assert_eq!(kind.to_u8(), value);
+        }
+        assert_eq!(EntryKind::from_u8(4), None);
+        assert!(EntryKind::LargeSnapshot.is_snapshot() && EntryKind::LargeSnapshot.is_large());
+        assert!(!EntryKind::Update.is_snapshot() && !EntryKind::Update.is_large());
     }
 
     #[test]

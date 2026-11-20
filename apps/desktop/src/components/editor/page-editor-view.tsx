@@ -11,6 +11,8 @@ import {
   type BlockMenuRequest,
   type EditorHost,
   type PageEditor,
+  type SyncedMenuRequest,
+  syncedReference,
   type SuggestionState,
 } from "../../editor/index.ts";
 import { createPageDoc } from "../../editor/binding.ts";
@@ -18,6 +20,9 @@ import { t } from "../../i18n/index.ts";
 import { useApp } from "../../state/app.tsx";
 import { Button } from "../common/button.tsx";
 import { ErrorBanner, Spinner } from "../common/states.tsx";
+import { RowProperties } from "../database/row-properties.tsx";
+import { SyncedDialogs, type SyncedDialog } from "./synced-dialogs.tsx";
+import { Menu, type MenuEntry } from "../common/menu.tsx";
 import { BacklinksPanel } from "./backlinks-panel.tsx";
 import { BlockMenu } from "./block-menu.tsx";
 import { FindBar } from "./find-bar.tsx";
@@ -40,11 +45,17 @@ function editorLabels() {
     pageInTrash: t("editor.pageInTrash"),
     pageMissing: t("editor.pageMissing"),
     editorLabel: t("editor.label"),
+    syncedBlock: t("synced.block"),
+    syncedCount: t("synced.count"),
+    syncedLoading: t("synced.loading"),
+    syncedMissing: t("synced.missing"),
+    syncedMenu: t("synced.menu"),
+    syncedNoNesting: t("synced.noNesting"),
   };
 }
 
 /** One open page: loads the snapshot, runs the editor, and keeps core and editor in step. */
-export function PageEditorView(props: { pageId: string }): JSX.Element {
+export function PageEditorView(props: { pageId: string; databaseId?: string }): JSX.Element {
   const app = useApp();
   const id = props.pageId;
   let mount!: HTMLDivElement;
@@ -61,6 +72,8 @@ export function PageEditorView(props: { pageId: string }): JSX.Element {
   const [linkRequest, setLinkRequest] = createSignal(0);
   const [picker, setPicker] = createSignal<{ resolve(page: PickedPage | null): void } | null>(null);
   const [draftTitle, setDraftTitle] = createSignal<string | null>(null);
+  const [syncedMenu, setSyncedMenu] = createSignal<SyncedMenuRequest | null>(null);
+  const [syncedDialog, setSyncedDialog] = createSignal<SyncedDialog | null>(null);
   let suggestionKeys: KeyHandler | null = null;
   let titleTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -84,12 +97,21 @@ export function PageEditorView(props: { pageId: string }): JSX.Element {
     chain = chain.then(drain);
   };
   const retrySave = () => void (chain = chain.then(drain));
+  /** Wait until every local edit has reached the core, so a command that changes the page works on what is on screen. */
+  const flush = async (): Promise<boolean> => {
+    chain = chain.then(drain);
+    await chain;
+    return outbox.length === 0;
+  };
 
   const host: EditorHost = {
     labels: editorLabels(),
     resolvePage: (pageId) => app.pageInfo(pageId),
     openPage: (pageId, inNewTab) => app.openPage(pageId, inNewTab),
     openExternal: (href) => openExternal(href),
+    openAttachment: (hash) => void playAttachment(hash),
+    synced: app.synced,
+    onSyncedMenu: setSyncedMenu,
     resolveImage: (src) => {
       const hash = parseAttachmentSrc(src);
       return hash ? app.core.api.attachmentUrl({ hash }) : src;
@@ -110,6 +132,14 @@ export function PageEditorView(props: { pageId: string }): JSX.Element {
       return true;
     },
     onError: (message) => void app.toasts.push("error", message),
+  };
+
+  const playAttachment = async (hash: string) => {
+    try {
+      await new Audio(await app.core.api.attachmentUrl({ hash })).play();
+    } catch (error) {
+      app.toasts.error(error);
+    }
   };
 
   const openExternal = (href: string) => {
@@ -136,7 +166,7 @@ export function PageEditorView(props: { pageId: string }): JSX.Element {
         });
         if (disposed) stop();
         else unlisten = stop;
-        if (app.tree.title(id) === "") titleInput.focus();
+        if (app.pageTitle(id) === "") titleInput.focus();
         else instance.view.focus();
       } catch (error) {
         if (disposed) return;
@@ -168,7 +198,30 @@ export function PageEditorView(props: { pageId: string }): JSX.Element {
 
   const commitTitle = (value: string) => {
     const title = value.trim();
-    if (title !== app.tree.title(id)) void app.guard(() => app.tree.rename(id, title));
+    if (title !== app.pageTitle(id)) void app.guard(() => app.renamePage(id, title));
+  };
+
+  const syncedMenuEntries = (request: SyncedMenuRequest): MenuEntry[] => [
+    {
+      kind: "item",
+      icon: "copy",
+      label: t("synced.copyReference"),
+      onSelect: () => {
+        const text = syncedReference(request.syncId);
+        void navigator.clipboard?.writeText(text).then(
+          () => app.toasts.push("success", t("synced.referenceCopied")),
+          () => app.toasts.push("info", text),
+        );
+      },
+    },
+    { kind: "item", icon: "page", label: t("synced.showPages"), onSelect: () => setSyncedDialog({ kind: "pages", syncId: request.syncId }) },
+    { kind: "separator" },
+    { kind: "item", icon: "sync", label: t("synced.unsync"), onSelect: () => setSyncedDialog({ kind: "unsync", syncId: request.syncId, path: request.path }) },
+  ];
+
+  const insertIndex = () => {
+    const view = editor()?.view;
+    return view ? view.state.selection.$from.index(0) + 1 : 0;
   };
 
   const requestPage = () => new Promise<PickedPage | null>((resolve) => setPicker({ resolve }));
@@ -179,14 +232,14 @@ export function PageEditorView(props: { pageId: string }): JSX.Element {
   };
 
   return (
-    <article class="page" aria-label={app.tree.title(id) || t("tree.untitled")}>
+    <article class="page" aria-label={app.pageTitle(id) || t("tree.untitled")}>
       <Show when={findOpen() && editor()}>{(current) => <FindBar editor={current()} tick={tick} onClose={() => setFindOpen(false)} />}</Show>
       <div class="page-scroll">
         <div class="page-column">
           <input
             ref={titleInput}
             class="page-title"
-            value={draftTitle() ?? app.tree.title(id)}
+            value={draftTitle() ?? app.pageTitle(id)}
             placeholder={t("page.untitled")}
             aria-label={t("page.titleLabel")}
             maxLength={300}
@@ -213,6 +266,7 @@ export function PageEditorView(props: { pageId: string }): JSX.Element {
           <ErrorBanner error={saveError() ? { code: "save_failed", message: t("page.saveFailed", { reason: saveError()?.message ?? "" }) } : null}>
             <Button onClick={retrySave}>{t("common.retry")}</Button>
           </ErrorBanner>
+          <Show when={props.databaseId}>{(databaseId) => <RowProperties databaseId={databaseId()} rowId={id} />}</Show>
           <Show when={phase() === "loading"}>
             <Spinner />
           </Show>
@@ -237,15 +291,29 @@ export function PageEditorView(props: { pageId: string }): JSX.Element {
                   editor={current()}
                   pageId={id}
                   requestPage={requestPage}
+                  onInsertSynced={() => setSyncedDialog({ kind: "insert", index: insertIndex() })}
                   registerKeys={(handler) => void (suggestionKeys = handler)}
                 />
               )}
             </Show>
             <Show when={blockMenu()}>
-              {(request) => <BlockMenu request={request()} editor={current()} onClose={() => setBlockMenu(null)} />}
+              {(request) => (
+                <BlockMenu
+                  request={request()}
+                  editor={current()}
+                  onClose={() => setBlockMenu(null)}
+                  onCreateSynced={(start, end) => setSyncedDialog({ kind: "create", start, end })}
+                />
+              )}
             </Show>
           </>
         )}
+      </Show>
+      <Show when={syncedMenu()}>
+        {(request) => <Menu label={t("synced.menu")} at={{ x: request().anchor.left, y: request().anchor.bottom + 4 }} entries={syncedMenuEntries(request())} onClose={() => setSyncedMenu(null)} />}
+      </Show>
+      <Show when={syncedDialog()} keyed>
+        {(dialog) => <SyncedDialogs pageId={id} dialog={dialog} flush={flush} onClose={() => setSyncedDialog(null)} />}
       </Show>
       <Show when={picker()}>
         <PagePickerDialog excludeId={id} onPick={closePicker} onCancel={() => closePicker(null)} />

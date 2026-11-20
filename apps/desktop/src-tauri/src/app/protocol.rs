@@ -53,7 +53,6 @@ const SAFE_TYPES: &[(&str, &str)] = &[
     ("webp", "image/webp"),
     ("bmp", "image/bmp"),
     ("avif", "image/avif"),
-    ("svg", "image/svg+xml"),
     ("pdf", "application/pdf"),
     ("mp3", "audio/mpeg"),
     ("wav", "audio/wav"),

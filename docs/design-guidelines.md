@@ -88,7 +88,7 @@ Không đóng gói font: dùng font hệ thống để mở nhanh và khớp mac
 
 ## 6. Icon
 
-Bộ icon **vẽ riêng** cho dự án, đặt trong `apps/desktop/src/components/common/icons.tsx` và theo giấy phép MIT của dự án; không dùng thư viện icon ngoài và không sao chép icon của sản phẩm khác. Mỗi icon là SVG inline 16×16, nét 1,5 px, `stroke="currentColor"`, đầu nét tròn, không tô màu, nên tự đổi theo chữ và theme. Icon chỉ trang trí thì `aria-hidden`; nút chỉ có icon luôn có `aria-label` và `title`. Block "trang con" và "liên kết trang" dùng hai icon khác nhau (tờ giấy, tờ giấy có mũi tên) để phân biệt.
+Bộ icon **vẽ riêng** cho dự án, đặt trong `apps/desktop/src/components/common/icons.tsx` và theo giấy phép MIT của dự án; không dùng thư viện icon ngoài và không sao chép icon của sản phẩm khác. Mỗi icon là SVG inline 16×16, nét 1,5 px, `stroke="currentColor"`, đầu nét tròn, không tô màu, nên tự đổi theo chữ và theme. Icon chỉ trang trí thì `aria-hidden`; nút chỉ có icon luôn có `aria-label` và `title`. Block "trang con" và "liên kết trang" dùng hai icon khác nhau (tờ giấy, tờ giấy có mũi tên) để phân biệt. Cơ sở dữ liệu có icon bảng (`database`), lịch sử trang là đồng hồ (`clock`), nhắc việc là cái chuông (`bell`).
 
 ## 7. Trạng thái của thành phần
 
@@ -138,3 +138,33 @@ Mọi chuỗi hiển thị nằm trong `apps/desktop/src/i18n`: `en.ts` là danh
 | `@testing-library/user-event` | mô phỏng thao tác người dùng (dev) | MIT |
 
 Phụ thuộc runtime thêm chỉ có `solid-js`. Các gói ProseMirror, Loro và Tauri đã có từ trước.
+
+## 12. Màu thẻ chọn (select option)
+
+Chín màu của tuỳ chọn trong thuộc tính "chọn một/chọn nhiều" là token cặp nền/chữ `--c-opt-<màu>-bg` và `--c-opt-<màu>-fg` (xám, nâu, cam, vàng, xanh lá, xanh dương, tím, hồng, đỏ), có đủ bản sáng và tối trong `tokens.css`. Tỉ lệ tương phản tính theo WCAG 2.x trên đúng các giá trị đó, tất cả đạt ≥ 7:1:
+
+| Màu | Sáng | Tối |
+|---|---|---|
+| xám | 8,7 | 8,0 |
+| nâu | 7,6 | 8,1 |
+| cam | 7,3 | 7,8 |
+| vàng | 7,4 | 7,7 |
+| xanh lá | 7,3 | 8,3 |
+| xanh dương | 8,1 | 8,0 |
+| tím | 8,5 | 8,3 |
+| hồng | 8,3 | 8,1 |
+| đỏ | 7,1 | 7,9 |
+
+Màu không phải tín hiệu duy nhất: thẻ luôn có tên chữ. Component: `OptionChip`.
+
+## 13. Thành phần cho cơ sở dữ liệu, lịch sử, nhắc việc và block đồng bộ
+
+- **Popover** (`components/common/popover.tsx`): bảng neo vào một phần tử cho trình sửa cần nhiều hơn menu (chọn tuỳ chọn, ngày, liên kết hàng, bộ lọc). `role="dialog"`, nhận focus khi mở, `Esc` hoặc bấm ra ngoài hoặc focus rời đi thì đóng và trả focus về phần tử đã mở nó. Không lồng popover trong popover; việc phức tạp hơn dùng hộp thoại.
+- **Bảng (table)** dùng `role="grid"`: một ô có `tabindex="0"` tại mỗi thời điểm (roving), mũi tên/Home/End/PageUp/PageDown di chuyển, Enter hoặc F2 sửa, gõ ký tự bắt đầu sửa, Space bật ô đánh dấu, Delete xoá giá trị, `Esc` huỷ, Ctrl/Cmd+Enter mở hàng làm trang, phím Menu hoặc Shift+F10 mở menu hàng. Chỉ các hàng gần khung nhìn nằm trong DOM (chiều cao hàng 36 px, `--db-row-h`); thanh cuộn vẫn có chiều cao thật. Hàng đang tải hiện thanh xám (`cell-skeleton`), không để vùng trắng.
+- **Kéo thả** luôn có lựa chọn bằng bàn phím: cột bảng đổi chỗ bằng menu "Move left/right" hoặc nhóm "Properties"; thẻ kanban di chuyển bằng Alt+mũi tên; độ rộng cột đổi bằng mũi tên trên tay nắm. Chỉ báo thả: viền nhấn quanh cột (thả vào cuối) hoặc vạch nhấn 2 px phía trên thẻ (thả trước thẻ).
+- **Thẻ, dòng danh sách, ô lịch** là nút hoặc ô lưới có tên truy cập; thẻ có `aria-keyshortcuts`.
+- **Hộp xác nhận đổi kiểu thuộc tính** (`ChangeTypeDialog`) luôn nói bằng lời điều gì xảy ra (giữ, đọc thành trống, hay không đổi) và hiện bảng "Hiện tại / Sau khi đổi" cho vài hàng đầu; nút xác nhận không nhận focus đầu tiên.
+- **Panel phụ** (`.side-panel`, rộng `--panel-w`) ở mép phải: lịch sử trang và nhắc việc. Là `aside` có nhãn; đóng bằng nút đóng. Lịch sử nói rõ khi lịch sử cũ không còn (khung `.notice`, các phiên bản bị vô hiệu), không giả vờ có bản xem trước.
+- **Block đồng bộ** (`.ne-synced`): khung viền nhấn với thanh tiêu đề tô nhạt ghi "Shown on N pages" và nút tuỳ chọn; trạng thái tải và "chưa về máy" là chữ trong `role="status"`. Nội dung bên trong là editor lồng nhau, sửa tại chỗ.
+- **Toast** có thể kèm một hành động chữ (ví dụ "Open page" khi nhắc việc đến hạn); hành động là nút thật, toast không tự đóng trong 12 giây với nhắc việc.
+- **Chỉ báo cập nhật** (`.update-pill`) là viên thuốc nhấn ở thanh trên, mở Cài đặt; không bao giờ tự cài.

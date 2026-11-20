@@ -1,4 +1,5 @@
 import type {
+  AddedAttachment,
   CoreApi,
   DeviceSession,
   SessionState,
@@ -69,7 +70,13 @@ function requirePassword(password: string): void {
   }
 }
 
-export function createAccount(bus: Bus, options: MemoryOptions): Account {
+/** Filled in once the pieces that need the account exist. */
+export interface AccountHooks {
+  /** Store the recording of a hold-to-talk session when the setting asks for it. */
+  recordAudio?: () => Promise<AddedAttachment>;
+}
+
+export function createAccount(bus: Bus, options: MemoryOptions, hooks: AccountHooks = {}): Account {
   let session: SessionStatus = { state: "empty" };
   const users = new Map<string, { password: string; recoveryKey: string }>();
   let currentPassword: string | null = null;
@@ -236,7 +243,8 @@ export function createAccount(bus: Bus, options: MemoryOptions): Account {
     async voiceStop() {
       if (!recording) throw apiError("not_recording", "Nothing is being recorded.");
       recording = false;
-      return { text: transcript };
+      const audio = settings.voiceKeepAudio ? await hooks.recordAudio?.() : undefined;
+      return audio ? { text: transcript, audio } : { text: transcript };
     },
     async voiceCancel() {
       recording = false;

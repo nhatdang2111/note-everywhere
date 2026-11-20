@@ -142,10 +142,12 @@ fn render_block(
                 .collect();
             (lines, Some(ListStyle::Ordered(delimiter)))
         }
-        // Items are rendered by their list; one found elsewhere is skipped.
-        BlockKind::ListItem | BlockKind::TodoItem { .. } | BlockKind::Unknown { .. } => {
-            plain(Vec::new())
-        }
+        // Items are rendered by their list; one found elsewhere is skipped. A
+        // synced block holds no content of its own, so it has nothing to write.
+        BlockKind::ListItem
+        | BlockKind::TodoItem { .. }
+        | BlockKind::SyncedBlock { .. }
+        | BlockKind::Unknown { .. } => plain(Vec::new()),
         BlockKind::Quote => {
             let lines = render_blocks(&block.children, env);
             plain(prefix_lines(

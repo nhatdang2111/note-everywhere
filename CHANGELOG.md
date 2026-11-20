@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-Nothing has been released yet. The entries below summarise what exists in the repository. The desktop application is not yet usable end to end: the shell that connects the Rust core to the UI is in progress and the app has not been smoke-tested in a real window.
+Nothing has been released yet. The entries below summarise what exists in the repository. The desktop shell that connects the Rust core to the UI is complete; the app has been launched once in a real window with no visual verification beyond that it opened, and has not yet been used end to end by a person.
 
 ### Added
 
@@ -22,10 +22,23 @@ Nothing has been released yet. The entries below summarise what exists in the re
 - Desktop editor foundation: ProseMirror editor bound to Loro with the fifteen block kinds, headless interoperability and latency checks.
 - Documentation: product spec, security model, sync protocol, architecture decision records (Tauri shell, CRDT choice, key derivation, Cloudflare sync server, licence and distribution, page document structure, offline transcription), feature research, setup, deployment and release guides, threat model, release checklist.
 - Open-source project files: `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, issue and pull request templates, and a release workflow that builds unsigned macOS (universal) and Windows installers into a draft GitHub release with SHA-256 checksums. The release workflow has never been run.
+- Account recovery: a forgotten password is reset with the account recovery key from any device (server verifier, client flow and desktop command); recovery signs every other device out and does not rotate the recovery key.
+- Large-object sync: updates and snapshots above the server's row limit travel in staged parts, with resumable uploads, tombstoning and compaction that cover them, tested with 5 MiB and 30 MiB documents.
+- Session activity: the device list shows when each session was last used, with a throttled update on the server.
+- Databases: tables, boards, lists and calendars over pages-as-rows, with typed properties (text, number, select, multi-select, date, checkbox, URL, relations with two-way backlinks), filters, sorts, grouping, saved views, and conflict-free concurrent edits of cells, options and card positions.
+- Templates: page templates and per-database row templates with default values.
+- Page history: versions grouped from the change log, read-only preview of any version, and restore as a new forward change that syncs.
+- Structured import: another app's Markdown and CSV export becomes folders, pages, databases with rows, attachments and rewritten page links, with a report of what was skipped.
+- Synced blocks: a block whose content is a shared document shown in several pages, with unsync, occurrence listing and clean-up of blocks no page shows any more.
+- Reminders: reminders on pages or on a database row's date property, snooze and reschedule, synced between devices, fired once per device by a scheduler.
+- Notifications: a due reminder shows a native notification on macOS and Windows. Permission is requested when the first reminder is created, never at launch. The `reminder:due` event carries `nativeShown` so the UI does not show a second notification, and without permission the event is all there is.
+- Updater: the app checks the newest GitHub release for an update on launch (at most once a day) and on demand, downloads it with progress and verifies its signature against a public key built into the app, and installs only when the person asks. A build without the key reports updates as unavailable. The release workflow produces signed updater packages and `latest.json` for macOS (universal) and Windows when the signing secret and public key variable exist, and still succeeds without them.
+- Sync coverage: the first full upload of a local workspace and server log compaction now include databases, templates, reminders and synced blocks explicitly; end-to-end tests cover two-device sync, upload at sign-up and a new device bootstrapping from a compacted log.
 
 ### Known limitations
 
 - The cryptographic code has not been independently audited.
-- Release installers will be unsigned and, on macOS, only ad-hoc signed; there is no automatic update yet.
+- Release installers will be unsigned and, on macOS, only ad-hoc signed. Updates are authenticated by the project's own updater signature, not by the operating system. The updater key pair has not been generated yet, so no release can update itself until the maintainer creates it, and the update flow has only been tested against a local server with throwaway keys.
+- Native reminder notifications cannot tell whether the person turned the app's notifications off in system settings on macOS and Windows; the app then reports the notification as shown.
 - Sync has not run on a real Cloudflare account, so CPU time per request and Durable Object hibernation on the free plan are unmeasured.
 - Speech-to-text has not been tried with real voices or on a Windows laptop.

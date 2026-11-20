@@ -3,12 +3,14 @@ import { t } from "../../i18n/index.ts";
 import { useApp } from "../../state/app.tsx";
 import { Button } from "../common/button.tsx";
 import { EmptyState, Spinner } from "../common/states.tsx";
+import { DatabaseView } from "../database/database-view.tsx";
 import { PageEditorView } from "./page-editor-view.tsx";
 
-/** Opens a page, or explains why it cannot be opened. */
-export function PageView(props: { pageId: string }): JSX.Element {
+/** Opens a page, database or database row, or explains why it cannot be opened. */
+export function PageView(props: { pageId: string; databaseId?: string | null }): JSX.Element {
   const app = useApp();
-  const state = () => app.tree.pageState(props.pageId);
+  const state = () => app.pageState(props.pageId, props.databaseId ?? undefined);
+  const isDatabase = () => app.tree.index().byId.get(props.pageId)?.kind === "database";
   return (
     <Show when={app.tree.loaded()} fallback={<Spinner />}>
       <Show
@@ -29,7 +31,9 @@ export function PageView(props: { pageId: string }): JSX.Element {
           </EmptyState>
         }
       >
-        <PageEditorView pageId={props.pageId} />
+        <Show when={isDatabase()} fallback={<PageEditorView pageId={props.pageId} databaseId={props.databaseId ?? undefined} />}>
+          <DatabaseView databaseId={props.pageId} />
+        </Show>
       </Show>
     </Show>
   );

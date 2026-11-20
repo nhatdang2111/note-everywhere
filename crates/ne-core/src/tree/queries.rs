@@ -103,6 +103,17 @@ impl WorkspaceTree {
         Ok(out)
     }
 
+    /// Kind of a node; a node without a readable kind counts as a folder,
+    /// like in [`NodeInfo`].
+    pub(super) fn kind_of(&self, tid: TreeID) -> NodeKind {
+        let kind = self.meta(tid).ok().and_then(|meta| {
+            let value = meta.get_value();
+            let text = value.as_map()?.get(KEY_KIND)?.as_string()?.to_string();
+            NodeKind::parse(&text)
+        });
+        kind.unwrap_or(NodeKind::Folder)
+    }
+
     pub(super) fn child_ids(&self, parent: TreeParentId) -> Vec<TreeID> {
         self.tree.children(parent).unwrap_or_default()
     }

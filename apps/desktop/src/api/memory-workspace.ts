@@ -25,18 +25,29 @@ export interface Workspace extends WorkspaceMethods {
   dropPageDoc(id: NodeId): void;
   /** Merge an update that "arrived from another device" and notify the open editor. */
   receiveRemoteUpdate(pageId: NodeId, update: Uint8Array): void;
-  /** The stored document, for assertions in tests. */
+  /** The stored document, for assertions in tests. Created on first use for pages. */
   doc(id: NodeId): LoroDoc | undefined;
+  /** Every page document that exists, trashed pages included. */
+  allDocs(): ReadonlyMap<NodeId, LoroDoc>;
+  /** Swap a page's document for another (templates). */
+  replaceDoc(id: NodeId, doc: LoroDoc): void;
+  /** The core changed a page's document: tell the open editor, as a remote update. */
+  publishChange(pageId: NodeId, update: Uint8Array): void;
+  /** Store bytes as an attachment. */
+  addAttachment(bytes: Uint8Array, mime: string): Promise<AddedAttachment>;
+  /** Pick files through the configured native-picker stand-in. */
+  pickFiles(accept: string, multiple: boolean, directory?: boolean): Promise<File[]>;
 }
 
 const SNIPPET_RADIUS = 60;
 
-function browserPick(accept: string, multiple: boolean): Promise<File[]> {
+function browserPick(accept: string, multiple: boolean, directory?: boolean): Promise<File[]> {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = accept;
     input.multiple = multiple;
+    if (directory) input.setAttribute("webkitdirectory", "");
     input.addEventListener("change", () => resolve([...(input.files ?? [])]));
     input.addEventListener("cancel", () => resolve([]));
     input.click();
@@ -88,8 +99,18 @@ export function createWorkspace(tree: TreeStore, bus: Bus, options: MemoryOption
   const pick = options.pickFiles ?? browserPick;
   const save = options.saveFile ?? browserSave;
 
+  // Documents are made on first use: a database of thousands of rows does not pay for a document per row.
+  const getDoc = (id: NodeId): LoroDoc | undefined => {
+    const known = docs.get(id);
+    if (known) return known;
+    if (tree.get(id)?.kind !== "page") return undefined;
+    const created = createSkeleton();
+    docs.set(id, created);
+    return created;
+  };
+
   const needDoc = (id: NodeId): LoroDoc => {
-    const doc = docs.get(id);
+    const doc = getDoc(id);
     if (!doc || !tree.isLive(id)) throw apiError("not_found", "That page is not available.");
     return doc;
   };
@@ -103,7 +124,7 @@ export function createWorkspace(tree: TreeStore, bus: Bus, options: MemoryOption
 
   const markdownOf = (id: NodeId): string => {
     const node = tree.get(id);
-    return `# ${node?.title || "Untitled"}\n\n${plainText(docs.get(id) ?? createSkeleton())}\n`;
+    return `# ${node?.title || "Untitled"}\n\n${plainText(getDoc(id) ?? createSkeleton())}\n`;
   };
 
   const subtreePages = (id: NodeId | null): NodeId[] =>
@@ -116,11 +137,18 @@ export function createWorkspace(tree: TreeStore, bus: Bus, options: MemoryOption
     }).map((page) => page.id);
 
   return {
-    createPageDoc(node) {
-      if (node.kind === "page") docs.set(node.id, createSkeleton());
-    },
+    createPageDoc: () => undefined,
     dropPageDoc: (id) => void docs.delete(id),
-    doc: (id) => docs.get(id),
+    doc: getDoc,
+    allDocs: () => docs,
+    replaceDoc: (id, doc) => void docs.set(id, doc),
+    publishChange(pageId, update) {
+      tree.touch(pageId);
+      markDirty();
+      bus.emit("page:remote-update", { pageId, update });
+    },
+    addAttachment,
+    pickFiles: pick,
 
     async pageOpen({ id }) {
       return { snapshot: needDoc(id).export({ mode: "snapshot" }) };
@@ -192,7 +220,7 @@ export function createWorkspace(tree: TreeStore, bus: Bus, options: MemoryOption
       if (files.length === 0) return null;
       for (const file of files) {
         const id = await tree.treeCreate({ kind: "page", parentId, title: file.name.replace(/\.(md|markdown)$/i, "") });
-        const doc = docs.get(id);
+        const doc = getDoc(id);
         if (!doc) continue;
         for (const line of (await file.text()).split(/\r?\n/)) if (line.trim()) appendParagraph(doc, line);
       }

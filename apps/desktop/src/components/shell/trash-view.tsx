@@ -49,7 +49,7 @@ export function TrashView(): JSX.Element {
           <For each={tree.trash()}>
             {(entry) => (
               <li class="trash-item">
-                <Icon name={entry.kind === "folder" ? "folder" : "page"} />
+                <Icon name={entry.kind === "folder" ? "folder" : entry.kind === "database" ? "database" : "page"} />
                 <span class="trash-title">{entry.title || t("tree.untitled")}</span>
                 <span class="trash-when">{t("trash.deleted", { when: formatRelative(entry.trashedAt) })}</span>
                 <Button icon="arrow-left" onClick={() => void app.guard(() => tree.restore(entry.id))}>

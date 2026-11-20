@@ -22,7 +22,7 @@ use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::keys::{KEY_LEN, SecretKey, WrappingKey};
+use crate::keys::{AuthKey, KEY_LEN, SecretKey, WrappingKey};
 use crate::random;
 
 /// Entropy of a recovery key in bytes (200 bits).
@@ -48,6 +48,16 @@ impl RecoveryKind {
         match self {
             Self::Account => b"note-everywhere/v1/recovery/account",
             Self::Vault => b"note-everywhere/v1/recovery/vault",
+        }
+    }
+
+    /// HKDF label of the authentication secret. It differs from [`Self::info`]
+    /// so the secret presented to a server is an independent output: it reveals
+    /// nothing about the key that wraps the root key.
+    fn auth_info(self) -> &'static [u8] {
+        match self {
+            Self::Account => b"note-everywhere/v1/recovery/account-auth",
+            Self::Vault => b"note-everywhere/v1/recovery/vault-auth",
         }
     }
 }
@@ -121,21 +131,40 @@ impl RecoveryKey {
         let (data, checksum) = symbols.split_at(DATA_SYMBOLS);
         let mut secret = [0u8; SECRET_LEN];
         decode_symbols(data, &mut secret);
-        if checksum_symbols(&secret).as_slice() != checksum {
+        // Constant time like every other secret comparison in this crate.
+        let matches: bool =
+            subtle::ConstantTimeEq::ct_eq(checksum_symbols(&secret).as_slice(), checksum).into();
+        if !matches {
             secret.zeroize();
             return Err(RecoveryParseError::ChecksumMismatch);
         }
         Ok(Self(secret))
     }
 
-    /// Derives the key that wraps the root key (or vault key) for `kind`.
-    pub fn wrapping_key(&self, kind: RecoveryKind) -> WrappingKey {
+    fn expand(&self, info: &[u8]) -> [u8; KEY_LEN] {
         let hkdf = Hkdf::<Sha256>::new(None, &self.0);
         let mut out = [0u8; KEY_LEN];
         // 32 bytes is far below the HKDF-SHA256 output limit, so this cannot fail.
-        hkdf.expand(kind.info(), &mut out)
+        hkdf.expand(info, &mut out)
             .expect("32-byte HKDF output is within limits");
+        out
+    }
+
+    /// Derives the key that wraps the root key (or vault key) for `kind`.
+    pub fn wrapping_key(&self, kind: RecoveryKind) -> WrappingKey {
+        let mut out = self.expand(kind.info());
         let key = WrappingKey::from_bytes(&out);
+        out.zeroize();
+        key
+    }
+
+    /// Derives the secret that proves possession of the recovery key to the
+    /// server (which stores only `auth::auth_verifier` of it). Domain-separated
+    /// from [`wrapping_key`](Self::wrapping_key): the two are independent HKDF
+    /// outputs, so presenting this one reveals nothing that helps unwrap a key.
+    pub fn auth_key(&self, kind: RecoveryKind) -> AuthKey {
+        let mut out = self.expand(kind.auth_info());
+        let key = AuthKey::from_bytes(&out);
         out.zeroize();
         key
     }
@@ -323,6 +352,26 @@ mod tests {
         assert_ne!(
             a.wrapping_key(RecoveryKind::Account),
             b.wrapping_key(RecoveryKind::Account)
+        );
+    }
+
+    #[test]
+    fn auth_key_is_independent_of_the_wrapping_key() {
+        let a = RecoveryKey::generate();
+        let auth = a.auth_key(RecoveryKind::Account);
+        assert_eq!(auth, a.auth_key(RecoveryKind::Account));
+        assert_ne!(auth, a.auth_key(RecoveryKind::Vault));
+        assert_ne!(
+            auth,
+            RecoveryKey::generate().auth_key(RecoveryKind::Account)
+        );
+        assert_ne!(
+            auth.as_bytes(),
+            a.wrapping_key(RecoveryKind::Account).as_bytes()
+        );
+        assert_ne!(
+            a.auth_key(RecoveryKind::Vault).as_bytes(),
+            a.wrapping_key(RecoveryKind::Vault).as_bytes()
         );
     }
 

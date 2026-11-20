@@ -1,6 +1,6 @@
 # Giao thức đồng bộ
 
-- Trạng thái: mô tả những gì `server/`, `crates/ne-sync/protocol` (định dạng dùng chung) và `crates/ne-sync` đã cài đặt, ngày 2026-11-21. Đã kiểm thử cục bộ với `wrangler dev`; chưa chạy trên Cloudflare thật.
+- Trạng thái: mô tả những gì `server/`, `crates/ne-sync/protocol` (định dạng dùng chung) và `crates/ne-sync` đã cài đặt, ngày 2026-11-21 (đã gồm khôi phục mật khẩu bằng recovery key, đối tượng lớn và `last_seen_at`). Đã kiểm thử cục bộ với `wrangler dev`; chưa chạy trên Cloudflare thật.
 - Phiên bản giao thức: 1 (byte đầu của mọi frame WebSocket). Mọi thay đổi không tương thích phải tăng số này.
 - Quyết định kiến trúc và số đo ở `docs/decisions/0004-sync-server-cloudflare-free.md`; mô hình đe doạ ở `docs/security-model.md`.
 
@@ -22,10 +22,12 @@ Xác thực: `Authorization: Bearer <token>`. Token là 32 byte ngẫu nhiên m�
 |---|---|---|
 | `GET /v1/health` | không | `{"status":"ok"}`; không gọi Durable Object |
 | `POST /v1/account/salt` | không | `{username}` → `{kdf_salt, kdf_params}`. Tên không tồn tại nhận salt giả xác định và cùng tham số với tài khoản thật |
-| `POST /v1/account/register` | mã thiết lập | `{setup_code, username, device_label, auth_key, record}` → 201 phiên. Chỉ thành công một lần cho cả đời server |
+| `POST /v1/account/register` | mã thiết lập | `{setup_code, username, device_label, auth_key, recovery_auth_key, record}` → 201 phiên. Chỉ thành công một lần cho cả đời server |
+| `POST /v1/account/recovery` | không | `{username}` → `{root_key_by_recovery, workspace_key}`: hai khoá đã bọc mà recovery key mở được. Tên không tồn tại nhận hai blob giả cùng hình dạng (mục 12) |
+| `POST /v1/account/recover` | không | `{username, recovery_auth_key, new_auth_key, device_label, record}` → 200 phiên mới: đặt lại mật khẩu bằng recovery key, thu hồi mọi phiên (mục 12) |
 | `POST /v1/session/login` | không | `{username, auth_key, device_label}` → 200 phiên |
 | `POST /v1/session/logout` | phiên | 204; đóng WebSocket của phiên |
-| `GET /v1/sessions` | phiên | danh sách `{id, label, created_at, expires_at, current}` |
+| `GET /v1/sessions` | phiên | danh sách `{id, label, created_at, last_seen_at, expires_at, current}` (mục 2.1) |
 | `DELETE /v1/sessions/{id}` | phiên | thu hồi một phiên và đóng WebSocket của nó; 404 nếu không có |
 | `POST /v1/account/password` | phiên | `{current_auth_key, new_auth_key, record}` → 204; thu hồi mọi phiên khác |
 | `GET /v1/account/record` | phiên | `AccountRecord` |
@@ -33,6 +35,7 @@ Xác thực: `Authorization: Bearer <token>`. Token là 32 byte ngẫu nhiên m�
 | `PUT`, `GET /v1/workspace-key` | phiên | `{workspace_key}`: khoá workspace đã bọc bằng khoá gốc |
 | `GET /v1/sync?device=<id>` | phiên | nâng cấp WebSocket (mục 3) |
 | `PUT`, `GET`, `HEAD`, `DELETE /v1/blobs/{sha256}` | phiên | file đính kèm (mục 8) |
+| `PUT`, `GET /v1/parts/{group}/{index}`, `GET /v1/parts/{group}` | phiên | phần của đối tượng lớn (mục 11) |
 
 Phản hồi đăng ký và đăng nhập: `{token, session_id, expires_at (ms), workspace_id, record}`. `record` có dạng của `ne-crypto::account::AccountRecord` (mọi byte là base64url không đệm). Server tính lại `auth_verifier` từ `auth_key` nhận được và bỏ qua giá trị client gửi trong `record`; nó kiểm tra độ dài mọi trường, không bao giờ mở các khoá đã bọc.
 
@@ -48,15 +51,20 @@ Thân lỗi luôn là `{"error": "<mã>"}` (thêm `retry_after` giây khi bị k
 | 403 | `forbidden` | sai mã thiết lập, không phải client ứng dụng, có `Origin` |
 | 403 | `registration_closed` | đã có tài khoản |
 | 404 | `not_found` | không có đối tượng; cũng dùng cho đường dẫn lạ |
+| 409 | `recovery_unavailable` | tài khoản tạo trước khi có xác minh recovery nên server không kiểm tra được recovery key (mục 12) |
 | 411 | `length_required` | thiếu `Content-Length` |
 | 413 | `payload_too_large` | thân quá giới hạn |
-| 429 | `locked` | đang bị khoá do đăng nhập sai; `Retry-After` và `retry_after` |
+| 429 | `locked` | đang bị khoá do đăng nhập hoặc khôi phục sai; `Retry-After` và `retry_after` |
 | 503 | `unavailable` | lỗi lưu trữ hoặc chạm hạn mức của Cloudflare; thử lại sau |
 | 507 | `quota_exceeded` | hạn mức tổng của file đính kèm đã đầy |
 
 ### Giới hạn đăng nhập sai
 
-Mỗi lần sai tính cho hai bộ đếm: tên tài khoản được thử (kể cả tên không tồn tại) và địa chỉ IP (`CF-Connecting-IP`). Bốn lần sai đầu không bị khoá. Từ lần sai thứ năm, khoá `30 s`, gấp đôi sau mỗi lần sai tiếp theo, tối đa một giờ. Trong lúc đang khoá, yêu cầu bị từ chối ngay với 429 và không tăng bộ đếm, nên spam không kéo dài khoá. Đăng nhập thành công xoá bộ đếm; bộ đếm tự quên sau 24 giờ không có lỗi mới. Số bộ đếm tối đa 2000 để dữ liệu không phình lên khi bị tấn công phun tên. Đăng ký sai mã thiết lập và đổi mật khẩu sai mật khẩu cũ dùng cùng cơ chế. Các hằng số có thể chỉnh bằng biến `LOCKOUT_FREE_ATTEMPTS` và `LOCKOUT_BASE_SECONDS`.
+Mỗi lần sai tính cho hai bộ đếm: tên tài khoản được thử (kể cả tên không tồn tại) và địa chỉ IP (`CF-Connecting-IP`). Bốn lần sai đầu không bị khoá. Từ lần sai thứ năm, khoá `30 s`, gấp đôi sau mỗi lần sai tiếp theo, tối đa một giờ. Trong lúc đang khoá, yêu cầu bị từ chối ngay với 429 và không tăng bộ đếm, nên spam không kéo dài khoá. Đăng nhập thành công xoá bộ đếm; bộ đếm tự quên sau 24 giờ không có lỗi mới. Số bộ đếm tối đa 2000 để dữ liệu không phình lên khi bị tấn công phun tên. Đăng ký sai mã thiết lập và đổi mật khẩu sai mật khẩu cũ dùng cùng cơ chế. Khôi phục bằng recovery key dùng cùng chính sách leo thang nhưng với **bộ đếm riêng** (theo tên và theo IP, tiền tố khác với đăng nhập): người quên mật khẩu thường đã đăng nhập sai nhiều lần và vẫn phải khôi phục được, còn đoán recovery key không được phép khoá chủ tài khoản khỏi đăng nhập bằng mật khẩu. Các hằng số có thể chỉnh bằng biến `LOCKOUT_FREE_ATTEMPTS` và `LOCKOUT_BASE_SECONDS`.
+
+### 2.1 Hoạt động của phiên (`last_seen_at`)
+
+Mỗi phiên có `last_seen_at` (ms). Phiên mới có `last_seen_at = created_at`. Server **không** ghi một dòng cho mỗi request: nó chỉ cập nhật trên các request đã vốn ghi dữ liệu (Push, Snapshot, Commit, tải phần lên) hoặc khi mở WebSocket, và chỉ khi giá trị đang lưu cũ hơn `SESSION_TOUCH_SECONDS` (mặc định 600 s). Câu lệnh là `UPDATE ... WHERE id = ? AND last_seen_at <= now - khoảng`, nên trong khoảng đó nó không ghi dòng nào (chỉ một lần đọc). Hệ quả: `last_seen_at` chính xác tới cỡ 10 phút, và một phiên bận cũng chỉ tốn một dòng ghi mỗi khoảng. Pull, danh sách phiên và các request chỉ đọc không đẩy giá trị này. Phiên cũ trước khi có cột trả `created_at`.
 
 ## 3. WebSocket
 
@@ -79,6 +87,7 @@ Số nguyên big-endian. `id` = `len u8` rồi các byte UTF-8, hợp lệ theo 
 | `0x01` | Push | `req_id u32`, `count u16` (1 đến 100), rồi `count` lần: `client_id [16]`, `doc id`, `payload blob` (1 đến 256 KiB) |
 | `0x02` | Pull | `req_id u32`, `cursor u64` |
 | `0x03` | Snapshot | `req_id u32`, `client_id [16]`, `doc id`, `upto u64`, `payload blob` (1 đến 960 KiB) |
+| `0x04` | Commit | `req_id u32`, `client_id [16]`, `doc id`, `kind u8` (0 update, 1 snapshot), `upto u64` (0 với update), `parts u16` (1 đến 64): công bố đối tượng lớn (mục 11) |
 
 `req_id` do client chọn, bắt đầu từ 1 (0 dành cho frame không được yêu cầu của server). Tổng payload của một Push tối đa 768 KiB.
 
@@ -87,7 +96,7 @@ Số nguyên big-endian. `id` = `len u8` rồi các byte UTF-8, hợp lệ theo 
 | Kiểu | Tên | Thân |
 |---|---|---|
 | `0x81` | Ack | `req_id u32`, `head u64`, `count u16`, rồi `count` số `seq u64` |
-| `0x82` | Updates | `req_id u32`, `flags u8` (bit 0 = xong), `next_cursor u64`, `head u64`, `count u16`, rồi `count` lần: `seq u64`, `kind u8` (0 update, 1 snapshot), `upto u64`, `doc id`, `device id`, `payload blob` |
+| `0x82` | Updates | `req_id u32`, `flags u8` (bit 0 = xong), `next_cursor u64`, `head u64`, `count u16`, rồi `count` lần: `seq u64`, `kind u8` (0 update, 1 snapshot, 2 update lớn, 3 snapshot lớn), `upto u64`, `doc id`, `device id`, `payload blob` |
 | `0x83` | SnapshotAck | `req_id u32`, `status u8` (0 nhận, 1 cũ, 2 từ chối), `dropped u32` |
 | `0x8f` | Error | `req_id u32`, `code u16` |
 
@@ -143,7 +152,7 @@ Dòng giữ lại: mọi update của `D` có `seq > N`, mọi dòng của tài 
 
 **Mã hoá hàng.** Plaintext được niêm phong có byte đầu cho biết loại: `0x00` rồi update; `0x01`, `upto u64`, rồi trạng thái. Client kiểm tra loại và `upto` khớp với dòng server báo, nên server không đổi nhãn update thành snapshot hay sửa `upto` mà không bị phát hiện. Một dòng không mở được hoặc sai loại làm client dừng (`CorruptData`) chứ không bỏ qua, vì bỏ qua sẽ mất dữ liệu âm thầm.
 
-Giới hạn hiện tại: snapshot nằm trong dòng SQLite nên tối đa 960 KiB mã hoá; tài liệu lớn hơn chưa nén được.
+Snapshot nằm trong dòng SQLite nên bản mã tối đa 960 KiB; trạng thái lớn hơn đi theo cơ chế đối tượng lớn (mục 11), nên mọi tài liệu đều nén được tới giới hạn đối tượng lớn.
 
 ## 8. File đính kèm
 
@@ -161,8 +170,10 @@ Lưu trong R2 qua binding của Worker, khoá `blobs/<sha256 hex của bản mã
 | Mục | Giá trị |
 |---|---|
 | Frame WebSocket | 1 MiB |
-| Payload một update | 256 KiB (gồm 42 byte phong bì) |
-| Payload một snapshot | 960 KiB |
+| Payload một update (trực tiếp) | 256 KiB (gồm 42 byte phong bì) |
+| Payload một snapshot (trực tiếp) | 960 KiB |
+| Một phần của đối tượng lớn | 1 MiB bản mã (1.047.552 byte bản rõ), tối đa 64 phần |
+| Một update hoặc snapshot lớn | 48 MiB bản rõ (client từ chối trên mức này) |
 | Update mỗi Push / tổng payload | 100 / 768 KiB |
 | Dòng mỗi trang Pull | 200 |
 | Id tài liệu, thiết bị, workspace | 64 ký tự |
@@ -170,9 +181,56 @@ Lưu trong R2 qua binding của Worker, khoá `blobs/<sha256 hex của bản mã
 | Đối tượng đính kèm | 64 MiB mặc định, 90 MiB trần |
 | Kết nối đồng thời | 16 |
 | Phiên đồng thời | 50 (phiên cũ nhất bị bỏ) |
+| Cập nhật `last_seen_at` | tối đa một lần mỗi phiên mỗi 600 s (`SESSION_TOUCH_SECONDS`) |
+| Phần chưa công bố | bị dọn sau 24 giờ |
 | Hạn phiên | 30 ngày (`SESSION_TTL_DAYS`) |
 | Bia mộ | 30 ngày |
 
 ## 10. Những gì server vẫn thấy và không làm được
 
 Xem `docs/security-model.md` cho phân tích đầy đủ. Tóm tắt phần liên quan tới giao thức: server thấy id tài liệu, id thiết bị, kích thước, thời điểm và tần suất; nó có thể giữ lại hay xoá dòng, hoặc trả log cũ, và log không có xác thực về thứ tự hay tính đầy đủ. Nó không thể đọc nội dung, chuyển update sang tài liệu hay thiết bị khác, đổi loại dòng, hay làm client chấp nhận file đính kèm bị sửa. Lưu ý thêm của giao thức này: id thiết bị là nhãn được xác thực chứ không chứng minh tác giả, vì mọi thiết bị đều giữ khoá workspace.
+
+## 11. Đối tượng lớn (update và snapshot vượt giới hạn một dòng)
+
+Một update hơn khoảng 256 KiB (trang nhập lớn, snapshot đầu của trang dài) hoặc một snapshot hơn 960 KiB không nằm vừa một dòng log hay một frame. Chúng đi theo cơ chế **staging rồi công bố**, áp dụng đồng nhất cho cả update và snapshot, cho mọi kích thước tới 48 MiB bản rõ.
+
+**Gửi.**
+1. Client thêm byte loại như thường lệ (`0x00` rồi update; `0x01`, `upto`, rồi trạng thái), cắt chuỗi đó thành các khúc `PART_CHUNK` = 1.047.552 byte, và niêm phong **từng khúc riêng** bằng phong bì (AAD: workspace, tài liệu, thiết bị). Bản rõ của mỗi phần bắt đầu bằng `0x02`, `group [16]`, `index u16`, `count u16`, rồi khúc dữ liệu. Header nằm trong phần được xác thực nên server không đảo, bỏ, thay hay trộn phần của đối tượng khác mà không bị phát hiện.
+2. `group` là `client_id` của dòng log sẽ được tạo. Với update, đó là id của mục outbox (không đổi giữa các lần gửi lại); với snapshot, một id ngẫu nhiên mới cho mỗi lần thử.
+3. Client hỏi `GET /v1/parts/{group}` (trả `{"have":[chỉ số...]}`) rồi `PUT /v1/parts/{group}/{index}` từng phần còn thiếu (`Content-Length` bắt buộc, 1 byte đến 1 MiB, `index` < 64). Server lưu `INSERT OR IGNORE` theo `(group, index)`: 201 nếu mới, 200 nếu đã có. Một phần bất kỳ hợp lệ dù do lần thử nào tạo ra vì mọi phần của cùng một `group` chứa cùng bản rõ.
+4. Khi đủ phần, client gửi **Commit** (frame `0x04`). Server kiểm tra các phần `0..parts-1` đều có (nếu thiếu trả Error 3 `Unavailable`, client tải lại phần thiếu), rồi chèn **một** dòng log với `kind` 2 (update lớn) hoặc 3 (snapshot lớn) và payload là manifest 18 byte: `group [16]`, `parts u16`. Dòng này nhận `seq` như mọi dòng khác, theo cùng quy tắc: update lớn trả `Ack`, snapshot lớn trả `SnapshotAck` và theo đúng luật snapshot ở mục 7 (`Stale`, `Rejected`, tombstone).
+
+**Nhận.** Dòng kind 2 và 3 đến qua Pull hoặc phát trực tiếp như dòng thường nhưng chỉ mang manifest. Client tải `GET /v1/parts/{group}/{index}` từng phần theo thứ tự, mở từng phần, kiểm tra `group`, `index` và `count` khớp manifest, ghép lại thành chuỗi bản rõ rồi xử lý như một dòng thường (cùng kiểm tra byte loại và `upto`). Chỉ khi ghép xong mới gọi `apply_incoming`.
+
+**Tính chất.**
+- *Nguyên tử với bên nhận.* Dòng log chỉ xuất hiện sau khi mọi phần đã bền, và bên nhận không áp dụng gì cho tới khi có đủ phần. Không có trạng thái áp dụng một nửa. Một phần không mở được hoặc sai header làm client dừng với `CorruptData` như mọi dòng hỏng.
+- *Lặp lại và mất kết nối giữa chừng.* Phần lưu theo khoá chính nên gửi lại không nhân đôi. Sau khi nối lại, client hỏi `have` và chỉ gửi phần thiếu. Commit lặp lại (cùng `client_id`) trả seq `0` như Push. Bên nhận tải lại từ đầu nếu kết nối đứt khi đang tải (mỗi phần thử tối đa ba lần trước khi bỏ kết nối).
+- *Nén và thiết bị mới.* Dòng lớn là dòng log bình thường nên mọi quy tắc nén ở mục 7 áp dụng nguyên văn: snapshot lớn thay các dòng cũ của tài liệu, và thiết bị cursor 0 nhận đúng snapshot cùng các update sau nó. Khi dòng bị tombstone, server xoá luôn các phần của nó (`DELETE FROM parts WHERE grp IN (...)`). Nếu một phần biến mất giữa lúc client nhận trang và lúc tải (dòng bị nén ngay sau đó), client bỏ kết nối và lần Pull kế tiếp mang snapshot thay thế.
+- *Dọn rác.* Phần chưa được công bố (client chết giữa chừng) bị xoá khi có một lần tải phần `index` 0 tới và chúng đã quá 24 giờ mà không có dòng log còn sống tham chiếu. Chưa có hạn mức tổng cho vùng staging: nó chỉ chứa dữ liệu của chính phiên đã xác thực của chủ tài khoản.
+- *Bộ nhớ.* Server chỉ giữ tối đa một phần (1 MiB) mỗi request, không bao giờ ghép đối tượng. Client giữ bản rõ của một đối tượng cùng bản đã niêm phong một phần tại một thời điểm; trang Pull được áp dụng theo từng đợt khoảng 32 MiB bản rõ, mỗi đợt dời cursor tới dòng cuối của nó (hợp lệ vì dòng đến theo thứ tự).
+- *Ngân sách dòng ghi của gói miễn phí.* Bảng `parts` là `WITHOUT ROWID` nên mỗi phần tốn **một** dòng ghi (không có chỉ mục phụ). Một update 30 MiB là 31 phần cộng khoảng ba dòng ghi cho dòng log (chèn và hai chỉ mục), tức chừng 34 dòng; khi bị nén thêm một dòng tombstone và 31 lần xoá phần. Cả vòng đời của một đối tượng 30 MiB dưới 100 dòng ghi, tức dưới 0,1% hạn mức ngày 100.000. Số request: mỗi phần là một request Worker, thêm một request cho `have`; mỗi thiết bị nhận tốn một request mỗi phần.
+- *Giới hạn.* Client từ chối `SyncError::TooLarge` với update hoặc trạng thái snapshot trên 48 MiB bản rõ; server giới hạn 64 phần và 1 MiB mỗi phần (kiểm ở Worker phía trước theo `Content-Length` và lại trên số byte nhận được).
+
+## 12. Khôi phục mật khẩu bằng recovery key
+
+Recovery key chỉ là một chuỗi 200 bit; từ nó client dẫn xuất bằng HKDF hai giá trị độc lập (nhãn khác nhau, xem `docs/security-model.md`): khoá bọc khoá gốc (ở lại máy) và **recovery auth key** (gửi cho server). Khi đăng ký client gửi thêm `recovery_auth_key`; server lưu `auth_verifier(recovery_auth_key)` trong `recovery_verifier` của bản ghi tài khoản, đúng như với auth key của mật khẩu, và bỏ qua giá trị client tự điền trong `record`.
+
+Luồng:
+1. `POST /v1/account/recovery {username}` trả `root_key_by_recovery` và `workspace_key` (đã bọc). Tên không tồn tại nhận hai blob giả, xác định theo tên và hạt giống của server, cùng độ dài 73 byte và cùng byte phiên bản, nên không phân biệt được với tên thật qua nội dung. Không có throttle ở bước này (cũng như `/account/salt`).
+2. Client thử mở khoá gốc bằng recovery key **cục bộ**. Sai khoá hoặc sai tên: lỗi `WrongSecret` ngay trên máy, không có gì bí mật rời thiết bị.
+3. Client tạo salt mới, dẫn xuất khoá từ mật khẩu mới, bọc lại khoá gốc, rồi `POST /v1/account/recover {username, recovery_auth_key, new_auth_key, device_label, record}`. Server: kiểm tra độ dài và kiểm tra bộ đếm khoá riêng của khôi phục, so `recovery_auth_key` với `recovery_verifier` bằng so sánh hằng thời gian (tên không tồn tại so với một verifier giả không ai khớp được, nên thời gian và lỗi giống sai khoá). Sai: 401 `invalid_credentials` và tăng bộ đếm khôi phục (theo tên và theo IP). Đúng: xoá bộ đếm, thay `kdf_salt`, `kdf_params`, `root_key_by_password` bằng giá trị mới, đặt `auth_verifier = auth_verifier(new_auth_key)`, **giữ nguyên** `root_key_by_recovery`, `workspace_key` và `recovery_verifier` đã lưu (không tin giá trị trong yêu cầu), thu hồi **mọi** phiên (đóng WebSocket của chúng) và trả một phiên mới như đăng nhập.
+4. Dữ liệu không bị mã hoá lại: khoá gốc và khoá workspace không đổi, nên mọi dữ liệu và file đính kèm vẫn mở được và thiết bị mới đồng bộ như thường.
+
+**Recovery key không được xoay.** Sau khôi phục, cùng recovery key vẫn dùng được (và đặt lại được lần nữa). Xoay recovery key (sinh key mới, bọc lại khoá gốc, thay verifier) chưa cài đặt; ai có recovery key luôn đặt lại được mật khẩu và đá mọi thiết bị khác ra, nên phải giữ nó như giữ mật khẩu.
+
+**Tài khoản tạo trước thay đổi này** không có `recovery_verifier` (bản ghi cũ không có trường này; client đọc nó như toàn số 0 và `supports_recovery()` là sai). Dự án đang trước phát hành nên chấp nhận phải tạo tài khoản mới. Server từ chối gọn gàng, không panic: `POST /v1/account/recover` với đúng tên trả 409 `recovery_unavailable` mà không đụng tới bộ đếm hay dữ liệu; tên khác vẫn nhận 401 như tên không tồn tại. Đăng nhập bằng mật khẩu và mọi thứ khác không đổi. Client hiển thị mã `recovery_unavailable` với lời khuyên đăng nhập bằng mật khẩu hoặc tạo tài khoản mới.
+
+## 13. Hành vi phía thiết bị mà giao thức dựa vào
+
+Các điểm dưới đây thuộc về ứng dụng desktop (`apps/desktop/src-tauri/src/app/`), nhưng định dạng và hệ quả của chúng nằm trên dây nên được ghi ở đây.
+
+- **Id tài liệu trên dây.** Id nút của một trang có dạng `<số đếm>@<peer>`, ký tự `@` không hợp lệ theo `ids::is_valid_id`, nên trên dây `@` được thay bằng `:` (và đổi ngược khi nhận). Tài liệu cây có id `tree`, tài liệu vault là `vault`.
+- **Chỉ mục đính kèm.** Server lưu file đính kèm theo SHA-256 của **bản mã**, mà thiết bị khác không tự tính được từ hash nội dung trong trang. Bảng ánh xạ hash nội dung sang địa chỉ trên server (`cipher_hash`, kích thước, tên file) đi trong một tài liệu nhỏ được đồng bộ có id `attachments`, bằng chính cơ chế update mã hoá như mọi tài liệu khác.
+- **Đăng xuất.** Đăng xuất **giữ dữ liệu cục bộ** và đưa workspace về chế độ chỉ cục bộ: phiên bị thu hồi trên server (cố gắng hết sức), credential trong kho bảo mật của hệ điều hành bị xoá, **outbox, cursor và chỉ mục đính kèm bị xoá**. Lần đăng nhập sau (`queue_full_upload` trong `session.rs`) xếp lại **toàn bộ** dữ liệu cục bộ vào outbox từ cursor 0: snapshot cây, từng trang (kể cả trang trong thùng rác), vault, và mọi tài liệu đồng bộ khác mà `Workspace::synced_documents()` liệt kê (database, thư viện template, nhắc hẹn, nội dung block đồng bộ) — rồi tải lên lại; bên nhận áp dụng update đã có là không đổi gì (mục 5). Cùng một danh sách tài liệu (`workspace_documents()`) cũng là danh sách mà việc nén log phía server (mục 7, `compact_server_log`) duyệt qua.
+- **`vault_conflict`.** Đăng nhập vào tài khoản mà bản ghi vault trên server **khác** bản ghi vault cục bộ bị từ chối với mã `vault_conflict` (hai vault có hai khoá riêng nên không gộp được). Chỉ khi một bên chưa có vault thì bên kia được nhận (hoặc được đưa lên).
+- **`ServerReset`.** Nếu `head` do server trả nhỏ hơn cursor cục bộ (server bị xoá hoặc khôi phục từ bản cũ), engine dừng với trạng thái lỗi `ServerReset` thay vì lùi cursor, không gửi gì thêm và không ghi đè dữ liệu cục bộ. Thiết bị phải đăng nhập vào server mới (sau khi đăng xuất, dữ liệu cục bộ sẽ được tải lại).

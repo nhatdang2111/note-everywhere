@@ -1,6 +1,6 @@
 # Hướng dẫn phát hành và triển khai
 
-- Trạng thái: bản nháp đầu, ngày 2026-11-21. Quy trình dưới đây **chưa từng được chạy thật**: workflow `release.yml` chưa thực thi lần nào, chưa có tag nào, chưa có khoá ký updater. Lần đầu hãy chạy dry run (mục 3) và đối chiếu từng bước với [danh sách kiểm tra trước phát hành](./release-checklist.md).
+- Trạng thái: bản nháp đầu, ngày 2026-11-21. Quy trình dưới đây **chưa từng được chạy thật**: workflow `release.yml` chưa thực thi lần nào (phần tạo artifact updater và `latest.json` mới chỉ được kiểm bằng cách chạy riêng từng đoạn script trên file giả và kiểm cú pháp YAML), chưa có tag nào, chưa có khoá ký updater (đó là bước thủ công của maintainer, mục 2.1). Lần đầu hãy chạy dry run (mục 3) và đối chiếu từng bước với [danh sách kiểm tra trước phát hành](./release-checklist.md).
 - Đối tượng đọc: người duy trì dự án (maintainer).
 - Ràng buộc của dự án (xem [ADR 0005](./decisions/0005-licence-and-distribution.md)): giấy phép MIT, không có chi phí cố định. Vì vậy không có Apple Developer ID, không công chứng (notarization), không chứng chỉ ký code Windows, không tên miền riêng. Bản phát hành là bộ cài **không ký** trên GitHub Releases kèm checksum, cộng với cách tự biên dịch từ mã nguồn. Mỗi người dùng tự triển khai server đồng bộ trên gói miễn phí của Cloudflare. Không có telemetry.
 
@@ -18,8 +18,9 @@ git tag vX.Y.Z  +  git push origin vX.Y.Z
         v
 .github/workflows/release.yml
    preflight   : tag = version trong tauri.conf.json = version của workspace
-   build       : macOS (universal, ad-hoc sign) và Windows x64 (NSIS)
-   checksums   : SHA256SUMS.txt cho mọi artifact
+   build       : macOS (universal, ad-hoc sign) và Windows x64 (NSIS);
+                 có khoá updater thì thêm gói cập nhật đã ký (*.sig)
+   checksums   : latest.json cho updater (nếu có chữ ký) và SHA256SUMS.txt cho mọi artifact
    release     : tạo release NHÁP (draft) với ghi chú tự sinh
         |
         v
@@ -48,19 +49,22 @@ pnpm tauri signer generate -w ~/.tauri/note-everywhere.key
 
 Lệnh tạo hai file: khoá riêng (`note-everywhere.key`) và khoá công khai (`note-everywhere.key.pub`).
 
-Thêm hai secret vào repository (Settings → Secrets and variables → Actions, hoặc bằng `gh`):
+Thêm hai secret và một biến (variable) vào repository (Settings → Secrets and variables → Actions, hoặc bằng `gh`):
 
 ```sh
 gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/note-everywhere.key
 gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD     # nhập mật khẩu khi được hỏi, không đưa vào lệnh
+gh variable set UPDATER_PUBLIC_KEY < ~/.tauri/note-everywhere.key.pub
 ```
+
+`UPDATER_PUBLIC_KEY` là **nội dung nguyên file `.pub`** (một chuỗi base64), không phải bí mật. Workflow ghép nó vào `plugins.updater.pubkey` của cấu hình Tauri cho riêng lần build đó; `tauri.conf.json` được commit **không** chứa khoá. Nhờ vậy khoá công khai nằm trong file thực thi của app và app dùng nó để kiểm chữ ký mọi bản cập nhật.
 
 Quy tắc:
 
 - Không bao giờ commit khoá riêng hoặc mật khẩu của nó. `.gitignore` đã chặn `*.key` và `*.pem` nhưng đừng dựa vào đó.
-- Sao lưu khoá riêng và mật khẩu ở nơi tách biệt với máy phát triển (ví dụ trình quản lý mật khẩu và một bản offline). **Mất khoá riêng nghĩa là các bản đã cài không nhận được cập nhật nữa** và người dùng phải cài lại bằng tay. Hiện không có cơ chế xoay khoá.
-- Nếu hai secret chưa được đặt, workflow vẫn chạy thành công: nó bỏ qua artifact updater và ghi một thông báo rõ ràng trong job summary. Không có secret nào bị in ra log.
-- Khoá công khai sẽ phải nằm trong `plugins.updater.pubkey` của `tauri.conf.json` khi app tích hợp updater (xem mục 4). Mục này thuộc phần shell desktop đang được làm, chưa có trong cấu hình hiện tại.
+- Sao lưu khoá riêng và mật khẩu ở nơi tách biệt với máy phát triển (ví dụ trình quản lý mật khẩu và một bản offline). **Mất khoá riêng nghĩa là các bản đã cài không nhận được cập nhật nữa** và người dùng phải cài lại bằng tay. Hiện không có cơ chế xoay khoá, vì khoá công khai đã nằm trong các bản đã cài.
+- Workflow chỉ tạo artifact updater khi **cả** secret `TAURI_SIGNING_PRIVATE_KEY` **và** biến `UPDATER_PUBLIC_KEY` cùng tồn tại. Thiếu một trong hai, workflow vẫn chạy thành công, bỏ qua artifact updater và `latest.json`, và ghi một thông báo rõ ràng trong job summary (nếu có secret mà thiếu biến thì thêm một cảnh báo, vì bản build khi đó không thể kiểm chữ ký). Một `UPDATER_PUBLIC_KEY` không phải nội dung file `.pub` hợp lệ làm job build thất bại ngay. Không có secret nào bị in ra log.
+- Bản build thiếu khoá công khai (build trên máy, CI, fork) **không crash**: app báo trạng thái cập nhật là `unavailable` kèm lý do và không kết nối mạng để tìm bản mới.
 
 ### 2.2 Quyền của GitHub Actions
 
@@ -85,7 +89,8 @@ Workflow dùng quyền tối thiểu: mặc định chỉ `contents: read`, và 
    ```
 6. **Chờ workflow.** Các job `preflight`, `build` (macOS, Windows), `checksums`, `release` chạy theo thứ tự. Kiểm job summary: nó liệt kê tham số build, feature đã bật, và cho biết artifact updater được tạo hay bị bỏ qua.
 7. **Duyệt bản nháp.** Vào Releases, mở draft:
-   - có `.dmg`, `-setup.exe` và `SHA256SUMS.txt` (cùng `.sig` và `.app.tar.gz` nếu có khoá updater);
+   - có `.dmg`, `-setup.exe` và `SHA256SUMS.txt` (cùng `.app.tar.gz`, các file `.sig` và `latest.json` nếu có khoá updater);
+   - nếu có `latest.json`: mở nó, kiểm version đúng, ba mục `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`, và URL trỏ đúng tên asset trong draft;
    - ghi chú tự sinh hợp lý; sửa tay nếu cần, giữ lại đoạn cảnh báo bộ cài không ký;
    - tải về và kiểm lại checksum bằng đúng hướng dẫn trong README.
 8. **Bấm Publish.** Sau đó tải thử từ trang Releases và so checksum một lần nữa.
@@ -94,11 +99,20 @@ Nếu workflow lỗi giữa chừng sau khi draft đã được tạo, xoá draf
 
 ## 4. Người dùng cập nhật như thế nào
 
-**Hiện tại (thủ công).** Người dùng tải bộ cài mới từ trang Releases, kiểm checksum, rồi chạy bộ cài đè lên bản cũ. Dữ liệu nằm trong thư mục dữ liệu của người dùng (do `ne-platform::dirs` xác định) chứ không nằm trong thư mục cài đặt, nên cài đè không nên xoá nó. Điều này **chưa được kiểm chứng** bằng lần cài thật; nó nằm trong danh sách kiểm tra phát hành. Khuyến nghị người dùng sao lưu thư mục dữ liệu trước khi nâng cấp.
+**Cập nhật trong app (chỉ khi bản phát hành được build với khoá updater).** App dùng plugin updater chính thức của Tauri với endpoint cố định là asset `latest.json` của bản phát hành **mới nhất đã Publish**: `https://github.com/nhatdang2111/note-everywhere/releases/latest/download/latest.json`. Hành vi:
 
-**Tự động (chưa có).** Workflow đã sẵn sàng tạo các file cập nhật đã ký (`*.app.tar.gz`, `*.sig`) khi có khoá, nhưng app **chưa tích hợp** `tauri-plugin-updater`, `tauri.conf.json` chưa có `plugins.updater`, và workflow chưa sinh `latest.json`. Muốn bật cập nhật tự động cần làm đủ ba việc: thêm plugin và quyền trong shell desktop, đặt `pubkey` cùng `endpoints` (dự kiến trỏ tới `latest.json` trong GitHub Release), và thêm bước tạo `latest.json` vào workflow. Cho tới khi đó, đừng nói với người dùng rằng app tự cập nhật.
+- App kiểm tra khi khởi động, tối đa một lần mỗi ngày (thời điểm lần kiểm tra hoàn tất gần nhất được lưu trong thư mục dữ liệu), và kiểm tra theo yêu cầu bất cứ lúc nào. Lần kiểm tra thất bại (mất mạng) không tính là đã kiểm tra, nên lần khởi động sau thử lại.
+- **Không bao giờ tự cài ngầm.** Kiểm tra chỉ cho biết có bản mới. Tải về là một lệnh riêng (có sự kiện tiến độ) và chỉ xác minh chữ ký. Cài và khởi động lại là lệnh thứ ba, do người dùng bấm.
+- Gói tải về bị huỷ nếu chữ ký không khớp khoá công khai trong app, nếu nó được ký bằng khoá khác, hoặc nếu nó được ký cho một version khác với version mà `latest.json` công bố.
+- Bản build không có khoá công khai báo `unavailable`; người dùng cập nhật thủ công như dưới đây.
 
-Lưu ý bảo mật: chữ ký updater chỉ chứng minh bản cập nhật do chủ khoá riêng phát hành. Lần cài đầu tiên vẫn là bộ cài không ký, nên gốc tin cậy là khoá công khai được cài sẵn trong app. Xem [threat-model.md](./threat-model.md).
+`latest.json` chỉ trỏ tới bản **đã Publish**: bản nháp (draft) và bản pre-release (tag có hậu tố như `-rc.1`) không phải "latest" của GitHub, nên không ai nhận chúng qua updater. Workflow tạo `latest.json` cho `darwin-aarch64` và `darwin-x86_64` (cùng một gói universal) và `windows-x86_64`, với URL tải trỏ vào đúng release có tag `vX.Y.Z`. Sau khi Publish bản đầu tiên có updater, hãy kiểm bằng tay (checklist mục 2.2) rằng URL `latest/download/latest.json` trả về đúng file.
+
+**Thủ công.** Người dùng tải bộ cài mới từ trang Releases, kiểm checksum, rồi chạy bộ cài đè lên bản cũ. Dữ liệu nằm trong thư mục dữ liệu của người dùng (do `ne-platform::dirs` xác định) chứ không nằm trong thư mục cài đặt, nên cài đè không nên xoá nó. Điều này **chưa được kiểm chứng** bằng lần cài thật; nó nằm trong danh sách kiểm tra phát hành. Khuyến nghị người dùng sao lưu thư mục dữ liệu trước khi nâng cấp.
+
+**Hệ quả bảo mật của bộ cài không ký kèm bản cập nhật có ký.** Bộ cài không có chữ ký của hệ điều hành, nên macOS Gatekeeper và Windows SmartScreen không xác thực được tác giả; ở lần cài đầu người dùng chỉ có checksum để đối chiếu với trang Releases. Với bản cập nhật, hệ điều hành cũng không kiểm gì thêm: **chữ ký updater, chứ không phải hệ điều hành, là thứ xác thực bản cập nhật**, và gốc tin cậy là khoá công khai được cài sẵn trong app. Hệ quả là ai nắm được khoá riêng ký updater có thể chạy mã tuỳ ý trên mọi máy đã cài, kể cả khi tài khoản GitHub và file `latest.json` không bị đụng tới, nên khoá riêng phải được bảo vệ như khoá phát hành và không được đưa vào log hay máy dùng chung. Ngược lại, kẻ chỉ kiểm soát được `latest.json` hoặc đường truyền (không có khoá riêng) không đưa được gói giả vào app. Xem [threat-model.md](./threat-model.md).
+
+**Thử updater mà không cần khoá thật.** `cargo test -p note-everywhere-desktop --test updater_plugin` tạo một cặp khoá tạm trong bộ nhớ, ký một gói giả, phục vụ nó từ server cục bộ rồi kiểm tra: tải thành công, và chữ ký sai, khoá lạ, gói bị sửa, version không khớp đều bị từ chối. Không có khoá riêng nào được ghi ra đĩa hay vào repository, và các kiểm thử không cài gì cả. Chúng không thay thế việc cập nhật thật từ bản cũ lên bản mới (mục 2.2 của checklist).
 
 ## 5. Rút lại một bản phát hành lỗi
 
@@ -114,8 +128,8 @@ Chọn theo tình trạng:
   1. Chuyển release về draft hoặc đánh dấu pre-release, và thêm ghi chú đầu trang nói rõ phiên bản có lỗi gì.
   2. Phát hành bản vá với version mới (`v0.1.1`) theo quy trình ở mục 3. Không dùng lại số version đã phát hành.
   3. Người đã cài bản lỗi cài bản vá đè lên, hoặc cài lại bản trước đó từ trang Releases.
-- **Dữ liệu và hạ cấp.** Schema SQLite chỉ có migration đi lên (hiện mới có `0001_init.sql`) và không có đường hạ cấp. Nếu bản lỗi đã nâng schema, bản cũ có thể không mở được dữ liệu đó. Vì vậy mọi thay đổi schema phải được ghi rõ trong ghi chú phát hành và người dùng được khuyên sao lưu trước.
-- **Khi đã có updater.** Phải sửa `latest.json` về bản tốt trước đó, nếu không app vẫn đề nghị bản lỗi. Mục này áp dụng sau khi tích hợp updater (mục 4).
+- **Dữ liệu và hạ cấp.** Schema SQLite chỉ có migration đi lên (`crates/ne-store/migrations/`: `0001_init.sql`, `0002_databases.sql`, và những bản sau) và không có đường hạ cấp. Nếu bản lỗi đã nâng schema, bản cũ có thể không mở được dữ liệu đó. Vì vậy mọi thay đổi schema phải được ghi rõ trong ghi chú phát hành và người dùng được khuyên sao lưu trước.
+- **Khi đã có updater.** Đưa release lỗi về draft hoặc pre-release thì `releases/latest` trỏ lại bản Publish trước đó, nên người chưa cập nhật không còn được đề nghị bản lỗi. Người đã cập nhật lên bản lỗi **không** bị hạ cấp (updater chỉ nhận version mới hơn), nên họ cần một bản vá có version cao hơn: hãy phát hành `v0.1.1` nhanh.
 - **Server.** Triển khai lại commit tốt gần nhất: checkout tag cũ trong `server/` rồi chạy `npx wrangler@latest deploy --env production`. Dữ liệu trong Durable Object không bị đụng tới, nhưng nếu bản lỗi đã thay đổi lược đồ lưu trữ thì bản cũ có thể không đọc được. Thay đổi giao thức không tương thích phải tăng số phiên bản giao thức (xem [sync-protocol.md](./sync-protocol.md)).
 
 ## 6. Server đồng bộ: triển khai, sao lưu, khôi phục
@@ -130,7 +144,7 @@ Mỗi người dùng tự triển khai server vào tài khoản Cloudflare của
 - Cơ sở dữ liệu (tài khoản, phiên, log) **không có lệnh xuất**: dữ liệu SQLite của Durable Object chỉ truy cập được từ Worker.
 - Recovery key và mật khẩu phải được lưu tách khỏi server. Mất cả hai là mất dữ liệu vĩnh viễn, không ai khôi phục được.
 
-**Khôi phục:** nếu mất cơ sở dữ liệu server, tạo lại tài khoản từ một thiết bị còn dữ liệu. Việc này cần app hỗ trợ tải lại toàn bộ dữ liệu lên server mới, tính năng đó **không có trong bản đầu**. Các thiết bị từng đăng nhập vào server cũ sẽ dừng với trạng thái "server was reset" vì lịch sử của server nằm sau lịch sử của chúng.
+**Khôi phục:** nếu mất cơ sở dữ liệu server, triển khai server mới rồi từ một thiết bị còn dữ liệu cục bộ: đăng xuất (dữ liệu cục bộ được giữ nguyên), sau đó đăng ký hoặc đăng nhập vào server mới. App xếp lại **toàn bộ** dữ liệu cục bộ vào outbox (cây, từng trang, vault, cùng database/template/nhắc hẹn/block đồng bộ) và tải lên lại từ đầu — xem `queue_full_upload` trong `apps/desktop/src-tauri/src/app/session.rs` và mục 13 của [sync-protocol.md](./sync-protocol.md). Các thiết bị khác, nếu vẫn trỏ vào server cũ hoặc đăng nhập lại vào server mới mà không đăng xuất trước, dừng với lỗi `ServerReset` vì lịch sử của server mới nằm sau cursor cục bộ của chúng (`sync.rs`); phải đăng xuất trên từng thiết bị đó rồi đăng nhập lại vào server mới để dữ liệu cục bộ của nó cũng được tải lại.
 
 **Xoá:** các lệnh xoá Worker và bucket là thao tác phá huỷ và không hoàn tác. Trước khi chạy, nêu rõ môi trường đích (`production` hay `dev`) và bảo đảm có recovery key cùng một bản dữ liệu cục bộ. Quy trình chi tiết ở mục "Wipe" của server/README.md.
 
@@ -144,4 +158,5 @@ Mỗi người dùng tự triển khai server vào tài khoản Cloudflare của
 | Công chứng macOS | Không có; chỉ ký ad-hoc |
 | Tên miền riêng | Không có; server dùng `workers.dev` của chính người dùng |
 | Telemetry, báo lỗi tự động | Không có |
+| Cập nhật tự động | Có, nhưng được xác thực bằng chữ ký updater của chính dự án, không phải chữ ký hệ điều hành (mục 4) |
 | Kênh phân phối | GitHub Releases cộng tự biên dịch từ mã nguồn |

@@ -10,6 +10,7 @@ mod config;
 mod db;
 mod front;
 mod http;
+mod parts;
 mod random;
 mod sessions;
 mod sync;

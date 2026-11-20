@@ -7,7 +7,7 @@ use ne_crypto::account::AccountSecrets;
 use ne_crypto::keys::{SecretKey, WorkspaceKey};
 use ne_sync_protocol::SnapshotOutcome;
 use ne_sync_protocol::ids::is_valid_id;
-use ne_sync_protocol::limits::MAX_UPDATE_PAYLOAD;
+use ne_sync_protocol::limits::MAX_LARGE_PLAINTEXT;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use url::Url;
@@ -16,7 +16,7 @@ use crate::backoff::Backoff;
 use crate::client::SyncClient;
 use crate::error::{Result, SyncError};
 use crate::random;
-use crate::runner::{Command, Runner, SEAL_OVERHEAD};
+use crate::runner::{Command, Runner};
 use crate::status::SyncStatus;
 use crate::store::{OutboxItem, SyncStore};
 use crate::transport::SessionToken;
@@ -103,7 +103,8 @@ impl SyncEngine {
         if !is_valid_id(doc_id) {
             return Err(SyncError::Input("invalid document id".into()));
         }
-        if update.is_empty() || update.len() + SEAL_OVERHEAD > MAX_UPDATE_PAYLOAD {
+        // Updates above one row's limit travel in parts, up to the large-object cap.
+        if update.is_empty() || update.len() + 1 > MAX_LARGE_PLAINTEXT {
             return Err(SyncError::TooLarge);
         }
         self.store
@@ -153,6 +154,9 @@ impl SyncEngine {
     ) -> Result<SnapshotOutcome> {
         if !is_valid_id(doc_id) {
             return Err(SyncError::Input("invalid document id".into()));
+        }
+        if state.len() + 9 > MAX_LARGE_PLAINTEXT {
+            return Err(SyncError::TooLarge);
         }
         let (reply, answer) = oneshot::channel();
         self.commands

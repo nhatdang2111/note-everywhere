@@ -40,9 +40,15 @@ export interface MemoryOptions {
   /** Whether this build offers transcription. Default true. */
   voiceAvailable?: boolean;
   /** Native file picker stand-in. The default opens a browser file input. */
-  pickFiles?: (accept: string, multiple: boolean) => Promise<File[]>;
+  pickFiles?: (accept: string, multiple: boolean, directory?: boolean) => Promise<File[]>;
   /** Native save stand-in. The default downloads a file. */
   saveFile?: (name: string, content: string) => void;
+  /** Clock stand-in for reminders; defaults to `Date.now`. */
+  now?: () => number;
+  /** Whether the core "shows a native notification" for due reminders (reported as `nativeShown`). Default false. */
+  nativeReminders?: boolean;
+  /** Report the updater as unavailable with this reason (a build without an updater key). */
+  updatesUnavailable?: string;
 }
 
 export const MEMORY_SETUP_CODE = "preview-setup-code";

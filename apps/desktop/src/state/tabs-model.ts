@@ -3,7 +3,8 @@ import type { NodeId } from "../api/contract.ts";
 /** What a tab shows. */
 export type Target =
   | { kind: "home" }
-  | { kind: "page"; pageId: NodeId }
+  /** `databaseId` is set for a row of a database, which the tree does not list. */
+  | { kind: "page"; pageId: NodeId; databaseId?: NodeId }
   | { kind: "trash" }
   | { kind: "vault" }
   | { kind: "settings" };
@@ -93,13 +94,13 @@ export function go(state: TabsState, direction: -1 | 1): TabsState {
  * Drop history entries for pages that no longer exist so Back never lands on a
  * dead page. Entries other than pages are always kept.
  */
-export function pruneMissing(state: TabsState, exists: (pageId: NodeId) => boolean, fallback: Target): TabsState {
+export function pruneMissing(state: TabsState, exists: (pageId: NodeId, databaseId?: NodeId) => boolean, fallback: Target): TabsState {
   const tabs = state.tabs.map((tab) => {
     const current = currentTarget(tab);
     const history: Target[] = [];
     let index = 0;
     tab.history.forEach((target, at) => {
-      if (target.kind === "page" && !exists(target.pageId)) return;
+      if (target.kind === "page" && !exists(target.pageId, target.databaseId)) return;
       if (at === tab.index) index = history.length;
       history.push(target);
     });

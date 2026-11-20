@@ -68,12 +68,15 @@ Nên có nếu kịp: file đính kèm và bảng đơn giản. Hai kiểu này 
 - Sửa được mọi thứ khi offline. Khi có mạng, thay đổi tự gửi đi và các máy hội tụ về cùng nội dung (nhóm OFF).
 - Hai máy cùng sửa một đoạn văn: giữ chỉnh sửa của cả hai, gộp theo ký tự. Không có hộp thoại "chọn phiên bản".
 - Thanh trạng thái cho biết: đã đồng bộ, đang chờ gửi, offline, hoặc lỗi.
-- Đăng nhập bằng tài khoản và mật khẩu. Mật khẩu không rời máy. Recovery key được tạo lúc lập tài khoản, vì server không thể đặt lại mật khẩu.
+- Đăng nhập bằng tài khoản và mật khẩu. Mật khẩu không rời máy. Recovery key được tạo lúc lập tài khoản, vì server không thể đặt lại mật khẩu. Khôi phục tài khoản bằng recovery key chạy trọn vẹn qua server (đổi mật khẩu, thu hồi mọi phiên khác, dữ liệu nguyên vẹn); xem `docs/security-model.md` mục 4.4 và `docs/sync-protocol.md` mục 12.
+- Tài liệu lớn (update hoặc snapshot vượt một dòng) vẫn đồng bộ được: chúng được chia thành các phần độc lập có xác thực riêng, xem `docs/security-model.md` mục 6.
 - Vault lưu đăng nhập, ghi chú bảo mật và API key; mở bằng mật khẩu cấp 2; tự khoá khi máy idle, sleep hoặc khoá màn hình.
 
 ## 9. Push-to-Talk (có điều kiện)
 
 Giữ phím nóng để nói, thả ra thì văn bản được chèn tại con trỏ. Nhận dạng tiếng Việt và tiếng Anh, chạy hoàn toàn trên máy. Tính năng chỉ được làm nếu spike đạt ngưỡng: sai số từ tiếng Việt dưới 12% và 10 giây lời nói xử lý dưới 5 giây trên máy không có GPU rời. Không đạt thì bỏ.
+
+Trạng thái hiện tại: **đạt cả hai ngưỡng, nhưng chỉ trên dữ liệu giả lập bằng text-to-speech** (xem `docs/decisions/0007-offline-transcription.md`). Chưa kiểm chứng bằng giọng người thật qua micro, và chưa đo trên laptop Windows không GPU rời (chỉ đo trên Apple M4 Pro). Tính năng chưa được coi là hoàn tất cho tới khi hai việc đó xong.
 
 ## 10. Nhập và xuất
 
@@ -82,15 +85,26 @@ Giữ phím nóng để nói, thả ra thì văn bản được chèn tại con 
 - Nhập thư mục Markdown, giữ cấu trúc thư mục thành cây trang và giữ file ảnh đi kèm.
 - Tên file xuất phải hợp lệ trên Windows (EXP-09).
 
-## 11. Sau v1
+## 11. Đã có ở lõi và shell, giao diện đang hoàn thiện
 
-Database và các view, template, lịch sử trang, block đồng bộ, nhắc việc, nhập từ bản xuất của Notion, tự dọn thùng rác, tô màu cú pháp trong code block, heading gập được.
+Các mục này ban đầu dự tính để "sau v1" nhưng đã được cài đặt ở `ne-core`/`ne-store` và các lệnh của shell desktop (`apps/desktop/src/api/contract.ts`); phần giao diện biên tập cho chúng vẫn đang được làm.
 
-## 12. Ngoài phạm vi
+- **Database**: node kiểu `database` trong cây, hàng là trang con của nó; có schema thuộc tính, nhiều view, và cột quan hệ/backlink giữa hai database (`dbSchema`, `dbQuery` và các lệnh `db*` khác).
+- **Template**: thư viện mẫu cho trang (`templateList`, `templateCreateFromPage`) và cho hàng của một database kèm giá trị mặc định theo thuộc tính (`templateCreateForDatabase`), tạo trang/hàng mới từ mẫu (`templateInstantiatePage`, `templateInstantiateRow`).
+- **Lịch sử trang**: `pageHistory` trả lịch sử theo phiên sửa (gộp theo khoảng thời gian), lùi lại được, lưu từ lúc trang được tạo, không tự xoá.
+- **Block đồng bộ**: nội dung dùng chung giữa nhiều trang, sửa ở đâu cũng cập nhật mọi nơi; xem [ADR 0008](./decisions/0008-synced-blocks.md) cho thiết kế và việc giao diện còn phải làm.
+- **Nhắc việc**: gắn một thời điểm nhắc vào trang hoặc vào một thuộc tính ngày của database (`Reminder`, `reminderAdd`); nhắc hết hạn khi trang bị xoá hoặc vào thùng rác.
+- **Nhập có cấu trúc**: nhập bản xuất Markdown + CSV của một ứng dụng khác (ví dụ Notion) qua `importStructured`, giữ lại cấu trúc database thay vì chỉ nhập trang phẳng.
+
+## 12. Sau v1
+
+Tự dọn thùng rác theo thời gian, tô màu cú pháp trong code block, heading gập được. Ba mục này **chưa** có trong `contract.ts` hay lõi tính tới thời điểm tài liệu này được cập nhật.
+
+## 13. Ngoài phạm vi
 
 Mobile, web, Linux, nhiều người dùng, chia sẻ công khai, bình luận, AI assistant, API công khai.
 
-## 13. Đề xuất chờ xác nhận
+## 14. Đề xuất chờ xác nhận
 
 Bốn lựa chọn dưới đây lấy từ mục 17 của bản kiểm kê và đã được viết vào spec như mặc định. Đổi bất kỳ mục nào thì sửa phần tương ứng ở trên.
 

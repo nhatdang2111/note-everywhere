@@ -1,6 +1,8 @@
 //! Plain data types of a page: blocks, inline content, marks and the link
 //! conventions stored in attributes.
 
+use serde::{Deserialize, Serialize};
+
 use crate::ids::NodeId;
 
 /// Prefix of a link target that points at another page: `ne-page:<node id>`.
@@ -51,7 +53,12 @@ pub fn parse_attachment_src(src: &str) -> Option<&str> {
 /// [`Image`](Self::Image), [`ChildPage`](Self::ChildPage) and
 /// [`PageLink`](Self::PageLink). [`ListItem`](Self::ListItem) and
 /// [`TodoItem`](Self::TodoItem) are the item wrappers inside lists.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum BlockKind {
     /// A paragraph of inline content.
     Paragraph,
@@ -114,6 +121,12 @@ pub enum BlockKind {
         /// Display copy of the title; the tree node is the source of truth.
         title: String,
     },
+    /// Placeholder for a block whose content is shared between pages. The
+    /// content lives in its own document, see [`crate::synced`].
+    SyncedBlock {
+        /// Id of the shared content document.
+        sync_id: String,
+    },
     /// A node name this version does not know. It is kept in place and never
     /// written or removed by this crate.
     Unknown {
@@ -141,6 +154,7 @@ impl BlockKind {
             Self::Image { .. } => "image",
             Self::ChildPage { .. } => "child_page",
             Self::PageLink { .. } => "page_link",
+            Self::SyncedBlock { .. } => "synced_block",
             Self::Unknown { node_name } => node_name,
         }
     }
@@ -162,13 +176,18 @@ impl BlockKind {
     pub fn is_atom(&self) -> bool {
         matches!(
             self,
-            Self::Divider | Self::Image { .. } | Self::ChildPage { .. } | Self::PageLink { .. }
+            Self::Divider
+                | Self::Image { .. }
+                | Self::ChildPage { .. }
+                | Self::PageLink { .. }
+                | Self::SyncedBlock { .. }
         )
     }
 }
 
 /// Inline formatting of a run of text.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Marks {
     /// Bold.
     pub bold: bool,
@@ -190,7 +209,7 @@ impl Marks {
 }
 
 /// A stretch of text that shares one set of marks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
     /// The text.
     pub text: String,
@@ -214,7 +233,8 @@ impl Run {
 }
 
 /// One element of a text block's content.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Inline {
     /// Text with marks.
     Text(Run),
@@ -255,7 +275,7 @@ pub fn normalize_inline(inline: Vec<Inline>) -> Vec<Inline> {
 /// have no children; container blocks fill [`children`](Self::children) and
 /// have no inline content. A path to a block is the list of child indexes from
 /// the page root.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
     /// Kind and attributes.
     pub kind: BlockKind,

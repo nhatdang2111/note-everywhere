@@ -74,6 +74,9 @@ impl From<ne_core::Error> for AppError {
             E::PositionOutOfRange { .. } | E::InvalidIcon { .. } | E::InvalidBlock(_) => {
                 Self::invalid(err.to_string())
             }
+            E::InvalidParent(_) => Self::invalid("A database holds only pages."),
+            E::Invalid(message) => Self::invalid(message),
+            E::Missing(_) => Self::not_found("That item"),
             E::Io(_) => Self::new("io_error", "A file could not be read or written."),
             E::Corrupt(_) | E::Crdt(_) | E::InvalidPage(_) | E::NoSuchBlock(_) => Self::new(
                 "storage_error",

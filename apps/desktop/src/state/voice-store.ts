@@ -1,7 +1,8 @@
 import { createMemo, createSignal } from "solid-js";
 import type { Core } from "../api/index.ts";
 import type { VoiceStatus } from "../api/contract.ts";
-import { insertTextAtCursor } from "../editor/index.ts";
+import { insertAttachmentBlock, insertTextAtCursor } from "../editor/index.ts";
+import { t } from "../i18n/index.ts";
 import type { UiStore } from "./ui-store.ts";
 
 export interface DownloadProgress {
@@ -62,17 +63,19 @@ export function createVoiceStore(core: Core, ui: UiStore, callbacks: Callbacks):
   async function stopAndInsert(): Promise<void> {
     setTranscribing(true);
     try {
-      const { text } = await core.api.voiceStop();
+      const { text, audio } = await core.api.voiceStop();
       setRecording(false);
       const trimmed = text.trim();
-      if (!trimmed) return;
       const editor = ui.activeEditor();
-      if (editor) {
-        insertTextAtCursor(editor.view, trimmed);
-        editor.view.focus();
-      } else {
-        callbacks.onOrphanText(trimmed);
+      if (!trimmed && !audio) return;
+      if (!editor) {
+        if (trimmed) callbacks.onOrphanText(trimmed);
+        return;
       }
+      if (trimmed) insertTextAtCursor(editor.view, trimmed);
+      // The recording goes in after the text, as a link to the stored file.
+      if (audio) insertAttachmentBlock(editor.view, audio.hash, t("voice.recordingLabel"));
+      editor.view.focus();
     } catch (error) {
       setRecording(false);
       callbacks.onError(error);

@@ -134,3 +134,47 @@
     --dur-base: 0ms;
   }
 }
+
+/* Colours of select options: a soft background with a text colour that keeps at least 7:1 contrast on it. */
+:root {
+  --c-opt-gray-bg: #e6e1d6;
+  --c-opt-gray-fg: #3f3a30;
+  --c-opt-brown-bg: #ecdcc9;
+  --c-opt-brown-fg: #5a3a1c;
+  --c-opt-orange-bg: #f8dfc4;
+  --c-opt-orange-fg: #6b3a05;
+  --c-opt-yellow-bg: #f3e6b0;
+  --c-opt-yellow-fg: #594400;
+  --c-opt-green-bg: #d5ecdb;
+  --c-opt-green-fg: #14532b;
+  --c-opt-blue-bg: #d6e4f5;
+  --c-opt-blue-fg: #17406f;
+  --c-opt-purple-bg: #e3dcf3;
+  --c-opt-purple-fg: #432b78;
+  --c-opt-pink-bg: #f5dbe6;
+  --c-opt-pink-fg: #701c47;
+  --c-opt-red-bg: #f6dcd8;
+  --c-opt-red-fg: #8a1d16;
+  --db-row-h: 36px;
+  --panel-w: 22rem;
+}
+:root[data-theme="dark"] {
+  --c-opt-gray-bg: #3a362d;
+  --c-opt-gray-fg: #d8d2c3;
+  --c-opt-brown-bg: #4a3523;
+  --c-opt-brown-fg: #efd4b8;
+  --c-opt-orange-bg: #543a1a;
+  --c-opt-orange-fg: #fbd9ae;
+  --c-opt-yellow-bg: #4d4012;
+  --c-opt-yellow-fg: #f4e08a;
+  --c-opt-green-bg: #1d3d29;
+  --c-opt-green-fg: #a8e4bd;
+  --c-opt-blue-bg: #1f3550;
+  --c-opt-blue-fg: #b4d2f4;
+  --c-opt-purple-bg: #35295a;
+  --c-opt-purple-fg: #d4c8f5;
+  --c-opt-pink-bg: #512a3d;
+  --c-opt-pink-fg: #f6c7dc;
+  --c-opt-red-bg: #4a2420;
+  --c-opt-red-fg: #ffb3ab;
+}

@@ -1,5 +1,8 @@
+import { enFeatures } from "./en-features.ts";
+
 /** English catalogue. The keys of this object are the only valid message keys. */
 export const en = {
+  ...enFeatures,
   // App and shell
   "app.name": "Note Everywhere",
   "app.loadErrorTitle": "Could not start",

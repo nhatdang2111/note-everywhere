@@ -28,6 +28,38 @@ impl NodeId {
     }
 }
 
+/// Replica id under which ids of documents that are not tree nodes are minted
+/// for fixed, well-known documents. No device ever uses it as its own replica
+/// id (the store never picks `u64::MAX`), so these ids cannot collide with
+/// the id of a node.
+const WELL_KNOWN_PEER: u64 = u64::MAX;
+
+impl NodeId {
+    /// Id of the document that holds the templates. Fixed, the same on every
+    /// device, so devices that create it independently merge into one.
+    pub fn library() -> Self {
+        Self(TreeID::new(WELL_KNOWN_PEER, 1))
+    }
+
+    /// Id of the document that holds the reminders. Fixed, see [`Self::library`].
+    pub fn reminders() -> Self {
+        Self(TreeID::new(WELL_KNOWN_PEER, 2))
+    }
+
+    /// A fresh id for a document that is not a tree node (the content of a
+    /// synced block). It has the shape of a node id, with a random 64-bit
+    /// replica part, so it travels through the same sync paths and cannot
+    /// collide with a node or another document in practice.
+    pub fn fresh_document() -> Self {
+        loop {
+            let peer = uuid::Uuid::new_v4().as_u64_pair().0;
+            if peer != WELL_KNOWN_PEER && peer != crate::page::SKELETON_PEER_ID {
+                return Self(TreeID::new(peer, 0));
+            }
+        }
+    }
+}
+
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)

@@ -22,6 +22,9 @@ pub enum ApiError {
     LengthRequired,
     Quota,
     Unavailable,
+    /// The account predates recovery verification and cannot be recovered
+    /// through the server.
+    RecoveryUnavailable,
 }
 
 pub type ApiResult<T> = std::result::Result<T, ApiError>;
@@ -38,6 +41,7 @@ impl ApiError {
             Self::Locked(_) => 429,
             Self::Quota => 507,
             Self::Unavailable => 503,
+            Self::RecoveryUnavailable => 409,
         }
     }
 
@@ -54,6 +58,7 @@ impl ApiError {
             Self::LengthRequired => codes::LENGTH_REQUIRED,
             Self::Quota => codes::QUOTA,
             Self::Unavailable => codes::UNAVAILABLE,
+            Self::RecoveryUnavailable => codes::RECOVERY_UNAVAILABLE,
         }
     }
 

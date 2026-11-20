@@ -1,6 +1,6 @@
 //! The front Worker: cheap checks, then at most one call to the Durable Object.
 
-use ne_sync_protocol::limits::MAX_JSON_BODY;
+use ne_sync_protocol::limits::{MAX_JSON_BODY, MAX_PART_PAYLOAD};
 use worker::{Env, Method, Request, Response, Result};
 
 use crate::config::Config;
@@ -32,6 +32,8 @@ fn precheck(req: &Request, cfg: &Config) -> std::result::Result<(), ApiError> {
     if matches!(req.method(), Method::Post | Method::Put) {
         let limit = if path.starts_with("/v1/blobs/") {
             cfg.blob_max
+        } else if path.starts_with("/v1/parts/") {
+            MAX_PART_PAYLOAD as u64
         } else {
             MAX_JSON_BODY as u64
         };

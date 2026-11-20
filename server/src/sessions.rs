@@ -34,8 +34,16 @@ pub fn create(db: &Db, label: &str, ttl_ms: u64, now: u64) -> Result<NewSession>
     let expires_at = now + ttl_ms;
     db.execute("DELETE FROM sessions WHERE expires_at <= ?", vec![n(now)])?;
     db.execute(
-        "INSERT INTO sessions (id, token_hash, label, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-        vec![s(&id), b(&token_hash(&token)), s(label), n(now), n(expires_at)],
+        "INSERT INTO sessions (id, token_hash, label, created_at, expires_at, last_seen_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        vec![
+            s(&id),
+            b(&token_hash(&token)),
+            s(label),
+            n(now),
+            n(expires_at),
+            n(now),
+        ],
     )?;
     db.execute(
         "DELETE FROM sessions WHERE id IN
@@ -66,22 +74,41 @@ pub fn authenticate(db: &Db, token: &str, now: u64) -> Result<Option<Session>> {
 
 pub fn list(db: &Db, current: &str, now: u64) -> Result<Vec<SessionInfo>> {
     let rows = db.query(
-        "SELECT id, label, created_at, expires_at FROM sessions
+        "SELECT id, label, created_at, expires_at, last_seen_at FROM sessions
          WHERE expires_at > ? ORDER BY created_at",
         vec![n(now)],
     )?;
     rows.iter()
         .map(|row: &Row| {
             let id = text(row, 0)?;
+            let created_at = uint(row, 2)?;
             Ok(SessionInfo {
                 current: id == current,
                 id,
                 label: text(row, 1)?,
-                created_at: uint(row, 2)?,
+                created_at,
                 expires_at: uint(row, 3)?,
+                // Rows from before activity was tracked hold 0.
+                last_seen_at: uint(row, 4)?.max(created_at),
             })
         })
         .collect()
+}
+
+/// Records activity. Writes only when the stored value is older than
+/// `interval_ms`, so a busy session costs one row write per interval and an
+/// active one costs only the read that finds nothing to change.
+pub fn touch(db: &Db, id: &str, now: u64, interval_ms: u64) -> Result<()> {
+    db.execute(
+        "UPDATE sessions SET last_seen_at = ? WHERE id = ? AND last_seen_at <= ?",
+        vec![n(now), s(id), n(now.saturating_sub(interval_ms))],
+    )
+}
+
+/// Revokes every session; returns the ids that were revoked.
+pub fn revoke_all(db: &Db) -> Result<Vec<String>> {
+    let rows = db.query("DELETE FROM sessions RETURNING id", vec![])?;
+    rows.iter().map(|row| text(row, 0)).collect()
 }
 
 /// Revokes one session; returns whether it existed.

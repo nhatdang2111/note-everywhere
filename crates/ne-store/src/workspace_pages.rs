@@ -2,6 +2,7 @@
 
 use ne_core::NodeId;
 use ne_core::page::PageDoc;
+use ne_core::roles::Role;
 use ne_core::tree::NodeKind;
 
 use crate::docs::{self, DocKind, DocRef};
@@ -9,6 +10,7 @@ use crate::error::{Error, Result};
 use crate::outbox;
 use crate::pages;
 use crate::workspace::{Change, Workspace, load_page};
+use crate::workspace_aux::well_known_role;
 use crate::workspace_tree::maybe_compact;
 
 impl Workspace {
@@ -17,7 +19,7 @@ impl Workspace {
     /// because the skeleton is the same operations everywhere, so it merges
     /// into the creator's copy without duplicating anything. `check_node`
     /// requires the page node to exist in the tree.
-    fn load_into_cache(&mut self, id: NodeId, check_node: bool) -> Result<()> {
+    pub(crate) fn load_into_cache(&mut self, id: NodeId, check_node: bool) -> Result<()> {
         if self.pages.contains(id) {
             return Ok(());
         }
@@ -25,14 +27,20 @@ impl Workspace {
             let info = self.tree.get(id)?;
             if info.kind != NodeKind::Page {
                 return Err(Error::InvalidInput(format!(
-                    "node {id} is a folder, not a page"
+                    "node {id} is a folder or a database, not a page"
                 )));
             }
         }
+        let clock = self.config.clock.clone();
         let doc = match load_page(&self.conn, id, self.peer_id)? {
-            Some(doc) => doc,
+            Some(doc) => doc.with_clock(clock),
             None => {
-                let doc = PageDoc::with_peer_id(self.peer_id)?;
+                if !check_node && docs::role(&self.conn, &id.to_string())?.is_none() {
+                    // An id that is not a node is only ever opened for a
+                    // document the store holds.
+                    return Err(Error::NotFound(format!("document {id}")));
+                }
+                let doc = PageDoc::with_peer_id(self.peer_id)?.with_clock(clock);
                 let now = self.now();
                 let tx = self.conn.transaction()?;
                 docs::insert(
@@ -43,7 +51,7 @@ impl Workspace {
                     &doc.version(),
                     now,
                 )?;
-                pages::index_page(&tx, id, &doc)?;
+                pages::index_page(&tx, id, &doc, now)?;
                 tx.commit()?;
                 doc
             }
@@ -122,7 +130,7 @@ impl Workspace {
     }
 
     /// Persists an update that is already applied to the cached document.
-    fn commit_page_update(
+    pub(crate) fn commit_page_update(
         &mut self,
         id: NodeId,
         update: &[u8],
@@ -153,7 +161,7 @@ impl Workspace {
         if outbound {
             outbox::enqueue(&tx, &DocRef::Page(id), update, now)?;
         }
-        pages::index_page(&tx, id, doc)?;
+        pages::index_page(&tx, id, doc, now)?;
         maybe_compact(&tx, &self.config, &key, now, || {
             Ok((doc.export_snapshot()?, version.clone()))
         })?;
@@ -174,15 +182,32 @@ impl Workspace {
 
     fn apply_remote_page(&mut self, id: NodeId, update: &[u8]) -> Result<Change> {
         let key = id.to_string();
-        if !self.pages.contains(id) && !docs::exists(&self.conn, &key)? {
+        let known = self.pages.contains(id) || docs::exists(&self.conn, &key)?;
+        // A document that is not a plain page says what it is in its first
+        // update; once stored, the role is read back from the store.
+        let role = if known {
+            docs::role(&self.conn, &key)?
+        } else {
+            ne_core::roles::role_of(update).or_else(|| well_known_role(id))
+        };
+        if let Some(role) = role
+            && role != Role::Synced
+        {
+            return self.apply_remote_aux(id, role, update, !known);
+        }
+        if !known {
             // First sight of this page. Its first update is stored as the
             // snapshot; it may be a full snapshot or an update, both import.
-            let doc = PageDoc::from_snapshot(update)?;
+            let doc = PageDoc::from_snapshot(update)?.with_clock(self.config.clock.clone());
             doc.set_peer_id(self.peer_id)?;
             let (now, version) = (self.now(), doc.version());
             let tx = self.conn.transaction()?;
             docs::insert(&tx, &key, DocKind::Page, update, &version, now)?;
-            pages::index_page(&tx, id, &doc)?;
+            if role == Some(Role::Synced) {
+                docs::set_role(&tx, &key, Role::Synced)?;
+                pages::refresh_orphan_state(&tx, &key, now)?;
+            }
+            pages::index_page(&tx, id, &doc, now)?;
             tx.commit()?;
             self.pages.insert(id, doc);
             return Ok(Change {
@@ -234,18 +259,9 @@ impl Workspace {
                 tx.commit()?;
             }
             DocRef::Page(id) => {
-                self.load_into_cache(*id, false)?;
-                let Some(page) = self.pages.get(*id) else {
-                    return Err(Error::NotFound(format!("page {id}")));
-                };
+                let (snapshot, version) = self.document_state(*id)?;
                 let tx = self.conn.transaction()?;
-                docs::compact(
-                    &tx,
-                    &doc.id(),
-                    &page.export_snapshot()?,
-                    &page.version(),
-                    now,
-                )?;
+                docs::compact(&tx, &doc.id(), &snapshot, &version, now)?;
                 tx.commit()?;
             }
             DocRef::Vault(_) => {

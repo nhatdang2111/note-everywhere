@@ -3,7 +3,7 @@
 
 use ne_core::NodeId;
 use ne_core::page::{LinkKind, PageDoc};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::blobs;
 use crate::error::{Error, Result};
@@ -41,7 +41,7 @@ fn kind_from_code(code: i64) -> Option<LinkKind> {
 /// Recomputes the derived data of page `id` from `doc`: its search entry,
 /// body text, outgoing links and attachment references. A page whose node is
 /// not in the index yet is skipped; it is indexed when the node appears.
-pub(crate) fn index_page(conn: &Connection, id: NodeId, doc: &PageDoc) -> Result<()> {
+pub(crate) fn index_page(conn: &Connection, id: NodeId, doc: &PageDoc, now: i64) -> Result<()> {
     let Some(rid) = nodes::rid_of(conn, id)? else {
         return Ok(());
     };
@@ -68,7 +68,12 @@ pub(crate) fn index_page(conn: &Connection, id: NodeId, doc: &PageDoc) -> Result
         conn.query_row("SELECT title_norm FROM nodes WHERE rid = ?1", [rid], |r| {
             r.get(0)
         })?;
-    search::index_node(conn, rid, &title_norm, &body_norm)?;
+    search::index_node(
+        conn,
+        rid,
+        &title_norm,
+        &with_row_text(conn, id, &body_norm)?,
+    )?;
 
     let source = id.to_string();
     conn.execute("DELETE FROM links WHERE source_id = ?1", [&source])?;
@@ -82,7 +87,65 @@ pub(crate) fn index_page(conn: &Connection, id: NodeId, doc: &PageDoc) -> Result
             kind_code(link.kind)
         ])?;
     }
+    set_synced_refs(conn, &source, &summary.synced, now)?;
     blobs::set_page_refs(conn, &source, &summary.attachments)
+}
+
+/// The folded property text of a database row, appended to the searchable
+/// body so rows are found by their text properties too.
+pub(crate) fn with_row_text(conn: &Connection, id: NodeId, body_norm: &str) -> Result<String> {
+    let extra: Option<String> = conn
+        .prepare_cached(
+            "SELECT r.search_norm FROM db_rows r JOIN nodes n ON n.id = r.row_id
+             WHERE r.row_id = ?1 AND r.db_id = n.parent_id",
+        )?
+        .query_row([id.to_string()], |row| row.get(0))
+        .optional()?;
+    Ok(match extra {
+        Some(extra) if !extra.is_empty() => format!("{body_norm} {extra}"),
+        _ => body_norm.to_owned(),
+    })
+}
+
+/// Records which synced blocks a page shows, and starts or stops the orphan
+/// clock of every block whose number of occurrences may have changed.
+fn set_synced_refs(conn: &Connection, page: &str, shown: &[String], now: i64) -> Result<()> {
+    let mut touched: Vec<String> = conn
+        .prepare_cached("SELECT sync_id FROM synced_refs WHERE page_id = ?1")?
+        .query_map([page], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    conn.execute("DELETE FROM synced_refs WHERE page_id = ?1", [page])?;
+    let mut insert = conn
+        .prepare_cached("INSERT OR IGNORE INTO synced_refs (sync_id, page_id) VALUES (?1, ?2)")?;
+    for sync_id in shown {
+        insert.execute(params![sync_id, page])?;
+    }
+    touched.extend(shown.iter().cloned());
+    touched.sort();
+    touched.dedup();
+    for sync_id in touched {
+        refresh_orphan_state(conn, &sync_id, now)?;
+    }
+    Ok(())
+}
+
+/// A synced block with no occurrence starts an orphan clock (kept if it is
+/// already running); one with an occurrence stops it.
+pub(crate) fn refresh_orphan_state(conn: &Connection, sync_id: &str, now: i64) -> Result<()> {
+    let shown: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM synced_refs WHERE sync_id = ?1",
+        [sync_id],
+        |row| row.get(0),
+    )?;
+    if shown > 0 {
+        conn.execute("DELETE FROM synced_state WHERE sync_id = ?1", [sync_id])?;
+    } else {
+        conn.execute(
+            "INSERT OR IGNORE INTO synced_state (sync_id, orphaned_at) VALUES (?1, ?2)",
+            params![sync_id, now],
+        )?;
+    }
+    Ok(())
 }
 
 /// Refreshes the search entry of a node after its title changed, keeping the
@@ -96,16 +159,22 @@ pub(crate) fn reindex_title(conn: &Connection, id: NodeId) -> Result<()> {
             r.get(0)
         })?;
     let body_norm = search::body_norm_of(conn, rid)?.unwrap_or_default();
-    search::index_node(conn, rid, &title_norm, &body_norm)
+    search::index_node(
+        conn,
+        rid,
+        &title_norm,
+        &with_row_text(conn, id, &body_norm)?,
+    )
 }
 
 /// Drops everything derived from a node that was permanently deleted.
-pub(crate) fn remove_page(conn: &Connection, id: NodeId, rid: Option<i64>) -> Result<()> {
+pub(crate) fn remove_page(conn: &Connection, id: NodeId, rid: Option<i64>, now: i64) -> Result<()> {
     if let Some(rid) = rid {
         search::remove_node(conn, rid)?;
         conn.execute("DELETE FROM page_text WHERE rid = ?1", [rid])?;
     }
     let source = id.to_string();
+    set_synced_refs(conn, &source, &[], now)?;
     conn.execute("DELETE FROM links WHERE source_id = ?1", [&source])?;
     blobs::clear_page_refs(conn, &source)
 }
@@ -116,6 +185,7 @@ pub(crate) fn clear_all(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM page_text", [])?;
     conn.execute("DELETE FROM links", [])?;
     conn.execute("DELETE FROM attachment_refs", [])?;
+    conn.execute("DELETE FROM synced_refs", [])?;
     conn.execute("UPDATE attachments SET ref_count = 0", [])?;
     Ok(())
 }

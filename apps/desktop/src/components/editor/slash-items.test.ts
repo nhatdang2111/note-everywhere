@@ -7,10 +7,11 @@ const label = (key: keyof typeof en) => en[key];
 const ids = (query: string) => filterSlashItems(query, label).map((item) => item.id);
 
 describe("slash menu filtering", () => {
-  it("offers exactly the 15 block kinds of the product spec, once each", () => {
-    expect(SLASH_ITEMS.map((item) => item.id)).toEqual([...BLOCK_CHOICES]);
-    expect(new Set(SLASH_ITEMS.map((item) => item.id)).size).toBe(15);
-    expect(ids("")).toHaveLength(15);
+  it("offers the 15 block kinds of the product spec, once each, then the two entries that make or find something first", () => {
+    expect(SLASH_ITEMS.slice(0, 15).map((item) => item.id)).toEqual([...BLOCK_CHOICES]);
+    expect(SLASH_ITEMS.slice(15).map((item) => item.id)).toEqual(["database", "synced_existing"]);
+    expect(new Set(SLASH_ITEMS.map((item) => item.id)).size).toBe(17);
+    expect(ids("")).toHaveLength(17);
   });
 
   it("filters on the label", () => {

@@ -65,6 +65,7 @@ pub mod filenames;
 mod folder;
 mod import;
 mod inline;
+pub mod structured;
 
 use crate::error::Result;
 use crate::page::{Block, PageDoc};

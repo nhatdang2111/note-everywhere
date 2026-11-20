@@ -441,3 +441,53 @@
   font-size: var(--fs-xs);
   color: var(--c-text-muted);
 }
+
+/* Synced block: a framed editor on content shared with other pages. */
+.ne-synced {
+  margin: var(--sp-3) 0;
+  border: 1px solid var(--c-accent);
+  border-radius: var(--r-md);
+  background: var(--c-bg-surface);
+}
+.ne-synced-selected {
+  outline: 2px solid var(--c-focus);
+}
+.ne-synced-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--sp-3);
+  background: var(--c-accent-soft);
+  color: var(--c-accent-on-soft);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.ne-synced-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 26px;
+}
+.ne-synced-menu {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+}
+.ne-synced-body {
+  position: relative;
+  padding: var(--sp-3) var(--sp-4);
+}
+.ne-synced-status {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--c-text-muted);
+}
+.ne-inline-attachment {
+  color: var(--c-accent);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}

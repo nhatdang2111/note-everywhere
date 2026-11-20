@@ -2,7 +2,7 @@
 
 How to get a working checkout on macOS or Windows, run the checks, and run the sync server and its integration suites locally. Nothing here needs a Cloudflare account.
 
-Status note: the desktop shell and UI are still being connected (see the [README](../README.md#status)). The Rust crates, the UI's headless tests and the sync server are what you can exercise today.
+Status note: the desktop shell and UI are wired to the Rust core, but the app has only been launched once in a real window and never used end to end by a person (see the [README](../README.md#status)).
 
 ## 1. Tools
 

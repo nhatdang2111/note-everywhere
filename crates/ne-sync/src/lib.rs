@@ -17,6 +17,7 @@ mod backoff;
 mod client;
 mod engine;
 mod error;
+mod parts;
 mod random;
 mod runner;
 mod status;

@@ -6,39 +6,41 @@ A local-first notes app for macOS and Windows, for one person on several devices
 
 **Pre-release, built in the open. Not ready for your real notes.**
 
-- The building blocks (storage, sync, encryption, vault, Markdown, speech-to-text) exist as Rust libraries with automated tests. The desktop window and the Rust core are still being connected, and the app has **not yet been smoke-tested end to end in a real window** on macOS or Windows.
-- The sync server has been tested against a local simulation of Cloudflare (`wrangler dev`), not on a real Cloudflare account.
-- The cryptographic code has **not had an independent security audit**. See [SECURITY.md](SECURITY.md) and [docs/threat-model.md](docs/threat-model.md).
+- The product described in the [spec](docs/product-spec.md) is implemented end to end — Rust core, desktop shell (`apps/desktop/src-tauri`) and UI (`apps/desktop/src`) — and covered by automated tests (`cargo test --workspace`, `pnpm test`, `pnpm typecheck`).
+- **CI is not currently green.** `.github/workflows/ci.yml` runs on macOS and Windows on every push to `main`; the run for the most recently pushed commit failed a Windows-only test (attachment file-name handling) and the dependency-licence job's `cargo-deny` check. Check the Actions tab before relying on any specific commit.
+- The app has been launched once in a real window, with no further visual verification beyond that it opened. It has **never been used end to end by a person** for real note-taking.
+- The sync server has been tested against a local simulation of Cloudflare (`wrangler dev`) and automated integration tests, not on a real Cloudflare account; it has **never been deployed to a real Cloudflare account**.
+- The cryptographic and vault code had an internal, AI-assisted read-through on 2026-11-21 (not an independent human audit) that found no exploitable vulnerability and led to two small hardening changes. It has **not had an independent security audit**. See [SECURITY.md](SECURITY.md), [docs/security-model.md](docs/security-model.md) and [docs/threat-model.md](docs/threat-model.md).
 - There is no published release yet. Installers will be unsigned (see below).
 
 Do not rely on it as your only copy of anything.
 
 ## What it does
 
-### Works today (as tested libraries)
+### Works today
 
 - **Workspace tree.** Folders and pages nest without limit; moving, favourites, trash and restore; two devices that move pages into each other while offline converge without creating a cycle (`crates/ne-core`).
 - **Page documents.** Fifteen block kinds (paragraph, three heading levels, bulleted, numbered and to-do lists, toggle, quote, callout, divider, code, image, child page, page link) stored as CRDT documents that merge character by character.
 - **Markdown.** Import a folder of Markdown files into a page tree and export a page or a branch as CommonMark/GFM, with file names that are valid on Windows.
 - **Local store.** One SQLite database per workspace, transactional writes, crash-safe, a durable sync outbox, content-addressed attachments (`crates/ne-store`).
 - **Search.** Full-text search over titles and content that ignores Vietnamese diacritics ("ghi chu" finds "ghi chú"), plus backlinks. Vault content never appears in results.
-- **Encryption.** Password-based key derivation (Argon2id), key wrapping, recovery keys, XChaCha20-Poly1305 envelopes for every update and chunked encryption for attachments (`crates/ne-crypto`).
-- **Sync.** A client and a Cloudflare Worker server: account and sessions, login throttling, encrypted update log with snapshot compaction, attachments through R2. The server only stores ciphertext plus the metadata it cannot avoid (`crates/ne-sync`, `server/`, [protocol](docs/sync-protocol.md)).
+- **Encryption.** Password-based key derivation (Argon2id), key wrapping, recovery keys, XChaCha20-Poly1305 envelopes for every update and chunked encryption for attachments, including documents too large for a single row (`crates/ne-crypto`).
+- **Sync.** A client and a Cloudflare Worker server: account and sessions, login throttling, encrypted update log with snapshot compaction, attachments through R2. Recovery by recovery key works end to end through the server (new password, every other session revoked). The server only stores ciphertext plus the metadata it cannot avoid (`crates/ne-sync`, `server/`, [protocol](docs/sync-protocol.md)).
 - **Vault.** Logins, secure notes and API keys sealed behind a second password, lock policy, password generator, `secret://` references, CSV import and export (`crates/ne-vault`).
-- **Offline speech-to-text.** Microphone capture, silence trimming, checksum-verified model download, and a whisper.cpp engine behind the `transcribe` feature. Measured only on synthetic text-to-speech audio, not on real voices (`crates/ne-voice`, [ADR 0007](docs/decisions/0007-offline-transcription.md)).
+- **Offline speech-to-text and push-to-talk.** Microphone capture, silence trimming, checksum-verified model download, a whisper.cpp engine behind the `transcribe` feature, and a hold-to-record hotkey wired into the editor. The accuracy/latency gate it must pass (ADR 0007) is **met only on synthetic text-to-speech audio**, not yet re-measured on real voices, and not yet measured on Windows (`crates/ne-voice`, [ADR 0007](docs/decisions/0007-offline-transcription.md)).
 - **OS integration.** Session token and root key in the macOS login keychain or Windows Credential Manager, idle and sleep detection (`crates/ne-platform`).
-- **Editor.** A ProseMirror editor bound to the page CRDT, with Markdown shortcuts, a `/` menu and the fifteen block kinds, checked headlessly (jsdom), not in a real window.
+- **Desktop shell and UI.** The Rust core is wired to a Tauri 2 shell (`apps/desktop/src-tauri`) and a ProseMirror-based UI (`apps/desktop/src`) covering the tree, editor, search, sign-in, sync status, vault and voice, through the IPC contract in `apps/desktop/src/api/contract.ts`. The app has been launched once in a real window; nobody has yet verified it visually or used it end to end.
+- **Databases, templates, page history, synced blocks, reminders, structured import from another app's export.** Implemented in the core and the shell's IPC contract; the editor UI for them (node views, menus) is still being finished — see the [product spec](docs/product-spec.md), section 11.
 
 ### In progress
 
-- The desktop shell (`apps/desktop/src-tauri`) that exposes the Rust core to the UI.
-- The desktop UI (`apps/desktop/src`): screens for the tree, editor, search, sign-in, sync status, vault and voice. They currently run against an in-memory backend used for development and tests.
+- Finishing the editor UI (node views, menus, dedicated screens) for databases, templates, page history, synced blocks and reminders.
+- Re-measuring the push-to-talk accuracy/latency gate on real voices and on a Windows laptop.
+- Exercising a real release: signing the updater, publishing to GitHub Releases, and updating from one real release to the next.
 
 ### Planned
 
-- Release installers and updates through GitHub Releases.
-- Push-to-talk dictation inserted at the cursor, wired into the UI.
-- Databases and views, templates, page history, reminders, import from a Notion export, automatic trash cleanup, syntax highlighting in code blocks (see the [product spec](docs/product-spec.md), section 11).
+- Automatic trash cleanup, syntax highlighting in code blocks, collapsible headings (see the [product spec](docs/product-spec.md), section 12).
 
 ### Not planned
 
